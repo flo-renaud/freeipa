@@ -25,20 +25,13 @@ import time
 import pwd
 
 import six
-# pylint: disable=import-error
-if six.PY3:
-    # The SafeConfigParser class has been renamed to ConfigParser in Py3
-    from configparser import ConfigParser as SafeConfigParser
-else:
-    from ConfigParser import SafeConfigParser
-# pylint: enable=import-error
 
 from ipaplatform.paths import paths
 from ipaplatform import services
 from ipalib import api, errors
 from ipapython import version
 from ipapython.ipautil import run, write_tmp_file
-from ipapython import admintool
+from ipapython import admintool, certdb
 from ipapython.dn import DN
 from ipaserver.install.replication import wait_for_task
 from ipaserver.install import installutils
@@ -46,7 +39,13 @@ from ipapython import ipaldap
 from ipaplatform.constants import constants
 from ipaplatform.tasks import tasks
 
-
+# pylint: disable=import-error
+if six.PY3:
+    # The SafeConfigParser class has been renamed to ConfigParser in Py3
+    from configparser import ConfigParser as SafeConfigParser
+else:
+    from ConfigParser import SafeConfigParser
+# pylint: enable=import-error
 ISO8601_DATETIME_FMT = '%Y-%m-%dT%H:%M:%S'
 
 logger = logging.getLogger(__name__)
@@ -189,10 +188,12 @@ class Backup(admintool.AdminTool):
         paths.DNSSEC_SOFTHSM_PIN_SO,
         paths.IPA_ODS_EXPORTER_KEYTAB,
         paths.IPA_DNSKEYSYNCD_KEYTAB,
+        paths.IPA_CUSTODIA_KEYS,
+        paths.IPA_CUSTODIA_CONF,
         paths.HOSTS,
     ) + tuple(
         os.path.join(paths.IPA_NSSDB_DIR, file)
-        for file in ('cert8.db', 'key3.db', 'secmod.db')
+        for file in (certdb.NSS_DBM_FILES + certdb.NSS_SQL_FILES)
     )
 
     logs=(
@@ -309,7 +310,7 @@ class Backup(admintool.AdminTool):
                     dirsrv.stop(capture_output=False)
             else:
                 logger.info('Stopping IPA services')
-                run(['ipactl', 'stop'])
+                run([paths.IPACTL, 'stop'])
 
             instance = installutils.realm_to_serverid(api.env.realm)
             if os.path.exists(paths.VAR_LIB_SLAPD_INSTANCE_DIR_TEMPLATE %
@@ -332,7 +333,7 @@ class Backup(admintool.AdminTool):
                     dirsrv.start(capture_output=False)
             else:
                 logger.info('Starting IPA service')
-                run(['ipactl', 'start'])
+                run([paths.IPACTL, 'start'])
 
         finally:
             try:
@@ -534,7 +535,7 @@ class Backup(admintool.AdminTool):
 
         # Compress the archive. This is done separately, since 'tar' cannot
         # append to a compressed archive.
-        result = run(['gzip', tarfile], raiseonerr=False)
+        result = run([paths.GZIP, tarfile], raiseonerr=False)
         if result.returncode != 0:
             raise admintool.ScriptError(
                 'gzip returned non-zero code %d '

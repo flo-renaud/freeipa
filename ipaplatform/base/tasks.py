@@ -34,13 +34,11 @@ logger = logging.getLogger(__name__)
 
 class BaseTaskNamespace(object):
 
-    def restore_context(self, filepath):
-        """
-        Restore SELinux security context on the given filepath.
+    def restore_context(self, filepath, force=False):
+        """Restore SELinux security context on the given filepath.
 
         No return value expected.
         """
-
         raise NotImplementedError()
 
     def backup_hostname(self, fstore, statestore):
@@ -204,8 +202,15 @@ class BaseTaskNamespace(object):
         """Configure httpd service to work with IPA"""
         raise NotImplementedError()
 
+    def configure_http_gssproxy_conf(self, ipauser):
+        raise NotImplementedError()
+
     def remove_httpd_service_ipa_conf(self):
         """Remove configuration of httpd service of IPA"""
+        raise NotImplementedError()
+
+    def configure_httpd_wsgi_conf(self):
+        """Configure WSGI for correct Python version"""
         raise NotImplementedError()
 
     def is_fips_enabled(self):
@@ -219,3 +224,6 @@ class BaseTaskNamespace(object):
             logger.debug('Done adding user to group')
         except ipautil.CalledProcessError as e:
             logger.debug('Failed to add user to group: %s', e)
+
+
+tasks = BaseTaskNamespace()

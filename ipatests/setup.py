@@ -1,4 +1,4 @@
-#!/usr/bin/python2
+#!/usr/bin/python3
 # Copyright (C) 2007  Red Hat
 # see file 'COPYING' for use and warranty information
 #
@@ -41,10 +41,10 @@ if __name__ == '__main__':
             "ipatests.test_integration",
             "ipatests.test_ipaclient",
             "ipatests.test_ipalib",
+            "ipatests.test_ipaplatform",
             "ipatests.test_ipapython",
             "ipatests.test_ipaserver",
             "ipatests.test_ipaserver.test_install",
-            "ipatests.test_pkcs10",
             "ipatests.test_webui",
             "ipatests.test_xmlrpc",
             "ipatests.test_xmlrpc.tracker"
@@ -55,7 +55,7 @@ if __name__ == '__main__':
             'ipatests.test_integration': ['scripts/*'],
             'ipatests.test_ipaclient': ['data/*/*/*'],
             'ipatests.test_ipalib': ['data/*'],
-            'ipatests.test_pkcs10': ['*.csr'],
+            'ipatests.test_ipaplatform': ['data/*'],
             "ipatests.test_ipaserver": ['data/*'],
             'ipatests.test_xmlrpc': ['data/*'],
         },
@@ -65,19 +65,19 @@ if __name__ == '__main__':
             "gssapi",
             "ipaclient",
             "ipalib",
+            "ipaplatform",
             "ipapython",
-            "nose",
             "polib",
             "pytest",
             "pytest_multihost",
+            "python-ldap",
             "six",
         ],
         extras_require={
-            ":python_version<'3'": ["python-ldap"],
-            ":python_version>='3'": ["pyldap"],
             "integration": ["dbus-python", "pyyaml", "ipaserver"],
             "ipaserver": ["ipaserver"],
             "webui": ["selenium", "pyyaml", "ipaserver"],
             "xmlrpc": ["ipaserver"],
+            ":python_version<'3'": ["mock"],
         }
     )

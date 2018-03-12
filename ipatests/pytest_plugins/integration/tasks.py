@@ -41,6 +41,7 @@ from ipalib.util import get_reverse_zone_default, verify_host_resolvable
 from ipalib.constants import (
     DEFAULT_CONFIG, DOMAIN_SUFFIX_NAME, DOMAIN_LEVEL_0)
 
+from .create_external_ca import ExternalCA
 from .env_config import env_to_script
 from .host import Host
 
@@ -89,6 +90,22 @@ def setup_server_logs_collecting(host):
 
     # SSSD debugging must be set after client is installed (function
     # setup_sssd_debugging)
+
+
+def collect_logs(func):
+    def wrapper(*args):
+        try:
+            func(*args)
+        finally:
+            if hasattr(args[0], 'master'):
+                setup_server_logs_collecting(args[0].master)
+            if hasattr(args[0], 'replicas') and args[0].replicas:
+                for replica in args[0].replicas:
+                    setup_server_logs_collecting(replica)
+            if hasattr(args[0], 'clients') and args[0].clients:
+                for client in args[0].clients:
+                    setup_server_logs_collecting(client)
+    return wrapper
 
 
 def check_arguments_are(slice, instanceof):
@@ -228,7 +245,7 @@ def restore_files(host):
 def restore_hostname(host):
     backupname = os.path.join(host.config.test_dir, 'backup_hostname')
     try:
-        hostname = host.get_file_contents(backupname)
+        hostname = host.get_file_contents(backupname, encoding='utf-8')
     except IOError:
         logger.debug('No hostname backed up on %s', host.hostname)
     else:
@@ -236,14 +253,14 @@ def restore_hostname(host):
         host.run_command(['rm', backupname])
 
 
-def enable_replication_debugging(host):
-    logger.info('Enable LDAP replication logging')
+def enable_replication_debugging(host, log_level=0):
+    logger.info('Set LDAP debug level')
     logging_ldif = textwrap.dedent("""
         dn: cn=config
         changetype: modify
         replace: nsslapd-errorlog-level
-        nsslapd-errorlog-level: 8192
-        """)
+        nsslapd-errorlog-level: {log_level}
+        """.format(log_level=log_level))
     host.run_command(['ldapmodify', '-x',
                       '-D', str(host.config.dirman_dn),
                       '-w', host.config.dirman_password,
@@ -472,7 +489,7 @@ def establish_trust_with_ad(master, ad_domain, extra_args=()):
     on the presence of SfU (Services for Unix) support on the AD.
 
     Use extra arguments to pass extra arguments to the trust-add command, such
-    as --range-type="ipa-ad-trust" to enfroce a particular range type.
+    as --range-type="ipa-ad-trust" to enforce a particular range type.
     """
 
     # Force KDC to reload MS-PAC info by trying to get TGT for HTTP
@@ -583,8 +600,9 @@ def modify_sssd_conf(host, domain, mod_dict, provider='ipa',
     :param provider_subtype: backend subtype (e.g. id or sudo), will be added
         to the domain config if not present
     """
+    fd, temp_config_file = tempfile.mkstemp()
+    os.close(fd)
     try:
-        temp_config_file = tempfile.mkstemp()[1]
         current_config = host.transport.get_file_contents(paths.SSSD_CONF)
 
         with open(temp_config_file, 'wb') as f:
@@ -692,7 +710,7 @@ def uninstall_master(host, ignore_topology_disconnect=True,
     if ignore_last_of_role and host_domain_level != DOMAIN_LEVEL_0:
         uninstall_cmd.append('--ignore-last-of-role')
 
-    host.run_command(uninstall_cmd, raiseonerr=False)
+    host.run_command(uninstall_cmd)
     host.run_command(['pkidestroy', '-s', 'CA', '-i', 'pki-tomcat'],
                      raiseonerr=False)
     host.run_command(['rm', '-rf',
@@ -1045,7 +1063,7 @@ def _entries_to_ldif(entries):
     io = StringIO()
     writer = LDIFWriter(io)
     for entry in entries:
-        writer.unparse(str(entry.dn), dict(entry))
+        writer.unparse(str(entry.dn), dict(entry.raw))
     return io.getvalue()
 
 
@@ -1096,11 +1114,11 @@ def add_a_records_for_hosts_in_master_domain(master):
         # domain
         try:
             verify_host_resolvable(host.hostname)
-            logger.debug("The host (%s) is resolvable.", host.domain.name)
+            logger.debug("The host (%s) is resolvable.", host.hostname)
         except errors.DNSNotARecordError:
             logger.debug("Hostname (%s) does not have A/AAAA record. Adding "
                          "new one.",
-                         master.hostname)
+                         host.hostname)
             add_a_record(master, host)
 
 
@@ -1163,8 +1181,10 @@ def install_kra(host, domain_level=None, first_instance=False, raiseonerr=True):
     if domain_level == DOMAIN_LEVEL_0 and not first_instance:
         replica_file = get_replica_filename(host)
         command.append(replica_file)
-    result = host.run_command(command, raiseonerr=raiseonerr)
-    setup_server_logs_collecting(host)
+    try:
+        result = host.run_command(command, raiseonerr=raiseonerr)
+    finally:
+        setup_server_logs_collecting(host)
     return result
 
 
@@ -1184,8 +1204,10 @@ def install_ca(host, domain_level=None, first_instance=False,
     if cert_files:
         for fname in cert_files:
             command.extend(['--external-cert-file', fname])
-    result = host.run_command(command, raiseonerr=raiseonerr)
-    setup_server_logs_collecting(host)
+    try:
+        result = host.run_command(command, raiseonerr=raiseonerr)
+    finally:
+        setup_server_logs_collecting(host)
     return result
 
 
@@ -1242,9 +1264,11 @@ def run_server_del(host, server_to_delete, force=False,
     return host.run_command(args, raiseonerr=False)
 
 
-def run_certutil(host, args, reqdir, stdin=None, raiseonerr=True):
-    new_args = [paths.CERTUTIL, "-d", reqdir]
-    new_args = " ".join(new_args + args)
+def run_certutil(host, args, reqdir, dbtype=None,
+                 stdin=None, raiseonerr=True):
+    dbdir = reqdir if dbtype is None else '{}:{}'.format(dbtype, reqdir)
+    new_args = [paths.CERTUTIL, '-d', dbdir]
+    new_args.extend(args)
     return host.run_command(new_args, raiseonerr=raiseonerr,
                             stdin_text=stdin)
 
@@ -1326,7 +1350,61 @@ def ldappasswd_user_change(user, oldpw, newpw, master):
     basedn = master.domain.basedn
 
     userdn = "uid={},{},{}".format(user, container_user, basedn)
+    master_ldap_uri = "ldap://{}".format(master.external_hostname)
 
     args = [paths.LDAPPASSWD, '-D', userdn, '-w', oldpw, '-a', oldpw,
-            '-s', newpw, '-x']
+            '-s', newpw, '-x', '-H', master_ldap_uri]
     master.run_command(args)
+
+
+def add_dns_zone(master, zone, skip_overlap_check=False,
+                 dynamic_update=False, add_a_record_hosts=None):
+    """
+    Add DNS zone if it is not already added.
+    """
+
+    result = master.run_command(
+        ['ipa', 'dnszone-show', zone], raiseonerr=False)
+
+    if result.returncode != 0:
+        command = ['ipa', 'dnszone-add', zone]
+        if skip_overlap_check:
+            command.append('--skip-overlap-check')
+        if dynamic_update:
+            command.append('--dynamic-update=True')
+
+        master.run_command(command)
+
+        if add_a_record_hosts:
+            for host in add_a_record_hosts:
+                master.run_command(['ipa', 'dnsrecord-add', zone,
+                                    host.hostname + ".", '--a-rec', host.ip])
+    else:
+        logger.debug('Zone %s already added.', zone)
+
+
+def sign_ca_and_transport(host, csr_name, root_ca_name, ipa_ca_name):
+    """
+    Sign ipa csr and save signed CA together with root CA back to the host.
+    Returns root CA and IPA CA paths on the host.
+    """
+
+    test_dir = host.config.test_dir
+
+    # Get IPA CSR as bytes
+    ipa_csr = host.get_file_contents(csr_name)
+
+    external_ca = ExternalCA()
+    # Create root CA
+    root_ca = external_ca.create_ca()
+    # Sign CSR
+    ipa_ca = external_ca.sign_csr(ipa_csr)
+
+    root_ca_fname = os.path.join(test_dir, root_ca_name)
+    ipa_ca_fname = os.path.join(test_dir, ipa_ca_name)
+
+    # Transport certificates (string > file) to master
+    host.put_file_contents(root_ca_fname, root_ca)
+    host.put_file_contents(ipa_ca_fname, ipa_ca)
+
+    return (root_ca_fname, ipa_ca_fname)

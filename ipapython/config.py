@@ -16,6 +16,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
+from __future__ import absolute_import
 
 # pylint: disable=deprecated-module
 from optparse import (
@@ -23,6 +24,7 @@ from optparse import (
 # pylint: enable=deprecated-module
 from copy import copy
 import socket
+import functools
 
 from dns import resolver, rdatatype
 from dns.exception import DNSException
@@ -32,16 +34,9 @@ from six.moves.configparser import SafeConfigParser
 from six.moves.urllib.parse import urlsplit
 # pylint: enable=import-error
 
+from ipaplatform.paths import paths
 from ipapython.dn import DN
-
-try:
-    # pylint: disable=ipa-forbidden-import
-    from ipaplatform.paths import paths
-    # pylint: enable=ipa-forbidden-import
-except ImportError:
-    IPA_DEFAULT_CONF = '/etc/ipa/default.conf'
-else:
-    IPA_DEFAULT_CONF = paths.IPA_DEFAULT_CONF
+from ipapython.ipautil import CheckedIPAddress, CheckedIPAddressLoopback
 
 
 class IPAConfigError(Exception):
@@ -65,13 +60,16 @@ class IPAFormatter(IndentedHelpFormatter):
             ret += "%s %s\n" % (spacing, line)
         return ret
 
-def check_ip_option(option, opt, value):
-    from ipapython.ipautil import CheckedIPAddress
 
+def check_ip_option(option, opt, value, allow_loopback=False):
     try:
-        return CheckedIPAddress(value)
+        if allow_loopback:
+            return CheckedIPAddressLoopback(value)
+        else:
+            return CheckedIPAddress(value)
     except Exception as e:
-        raise OptionValueError("option %s: invalid IP address %s: %s" % (opt, value, e))
+        raise OptionValueError("option {}: invalid IP address {}: {}"
+                               .format(opt, value, e))
 
 def check_dn_option(option, opt, value):
     try:
@@ -95,9 +93,11 @@ class IPAOption(Option):
     security-sensitive such as passwords.
     """
     ATTRS = Option.ATTRS + ["sensitive", "constructor"]
-    TYPES = Option.TYPES + ("ip", "dn", "constructor")
+    TYPES = Option.TYPES + ("ip", "dn", "constructor", "ip_with_loopback")
     TYPE_CHECKER = copy(Option.TYPE_CHECKER)
     TYPE_CHECKER["ip"] = check_ip_option
+    TYPE_CHECKER["ip_with_loopback"] = functools.partial(check_ip_option,
+                                                         allow_loopback=True)
     TYPE_CHECKER["dn"] = check_dn_option
     TYPE_CHECKER["constructor"] = check_constructor
 
@@ -181,7 +181,7 @@ config = IPAConfig()
 
 def __parse_config(discover_server = True):
     p = SafeConfigParser()
-    p.read(IPA_DEFAULT_CONF)
+    p.read(paths.IPA_DEFAULT_CONF)
 
     try:
         if not config.default_realm:
@@ -246,6 +246,8 @@ def __discover_config(discover_server = True):
 
     except Exception:
         pass
+    return None
+
 
 def add_standard_options(parser):
     parser.add_option("--realm", dest="realm", help="Override default IPA realm")

@@ -345,7 +345,7 @@ class KrbInstance(service.Service):
         MIN_KRB5KDC_WITH_WORKERS = "1.9"
         cpus = os.sysconf('SC_NPROCESSORS_ONLN')
         workers = False
-        result = ipautil.run(['klist', '-V'],
+        result = ipautil.run([paths.KLIST, '-V'],
                              raiseonerr=False, capture_output=True)
         if result.returncode == 0:
             verstr = result.output.split()[-1]
@@ -430,18 +430,21 @@ class KrbInstance(service.Service):
                     '--agent-submit'
                 ]
                 helper = " ".join(ca_args)
-                prev_helper = certmonger.modify_ca_helper(certmonger_ca, helper)
+                prev_helper = certmonger.modify_ca_helper(
+                    certmonger_ca, helper
+                )
 
             certmonger.request_and_wait_for_cert(
-                certpath,
-                subject,
-                krbtgt,
+                certpath=certpath,
+                subject=subject,
+                principal=krbtgt,
                 ca=certmonger_ca,
                 dns=self.fqdn,
                 storage='FILE',
                 profile=KDC_PROFILE,
                 post_command='renew_kdc_cert',
-                perms=(0o644, 0o600))
+                perms=(0o644, 0o600)
+            )
         except dbus.DBusException as e:
             # if the certificate is already tracked, ignore the error
             name = e.get_dbus_name()
@@ -502,8 +505,17 @@ class KrbInstance(service.Service):
             self._install_pkinit_ca_bundle()
             self.pkinit_enable()
         except RuntimeError as e:
-            logger.error("PKINIT certificate request failed: %s", e)
-            logger.error("Failed to configure PKINIT")
+            logger.warning("PKINIT certificate request failed: %s", e)
+            logger.warning("Failed to configure PKINIT")
+
+            self.print_msg("Full PKINIT configuration did not succeed")
+            self.print_msg(
+                "The setup will only install bits "
+                "essential to the server functionality")
+            self.print_msg(
+                "You can enable PKINIT after the "
+                "setup completed using 'ipa-pkinit-manage'")
+
             self.stop_tracking_certs()
             self.issue_selfsigned_pkinit_certs()
 

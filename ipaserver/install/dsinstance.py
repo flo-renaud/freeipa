@@ -84,7 +84,7 @@ DS_INSTANCE_PREFIX = 'slapd-'
 
 
 def find_server_root():
-    if ipautil.dir_exists(paths.USR_LIB_DIRSRV_64):
+    if os.path.isdir(paths.USR_LIB_DIRSRV_64):
         return paths.USR_LIB_DIRSRV_64
     else:
         return paths.USR_LIB_DIRSRV
@@ -185,7 +185,7 @@ def get_all_external_schema_files(root):
         for name in files:
             if fnmatch.fnmatch(name, "*.ldif"):
                 f.append(os.path.join(path, name))
-    return f
+    return sorted(f)
 
 
 INF_TEMPLATE = """
@@ -288,7 +288,6 @@ class DsInstance(service.Service):
         self.step("adding replication acis", self.__add_replication_acis)
         self.step("activating sidgen plugin", self._add_sidgen_plugin)
         self.step("activating extdom plugin", self._add_extdom_plugin)
-        self.step("tuning directory server", self.__tuning)
 
         self.step("configuring directory to start on boot", self.__enable)
 
@@ -394,7 +393,21 @@ class DsInstance(service.Service):
         self.step("restarting directory server", self.__restart_instance)
 
         self.step("creating DS keytab", self.request_service_keytab)
+
+        # 389-ds allows to ignore time skew during replication. It is disabled
+        # by default to avoid issues with non-contiguous CSN values which
+        # derived from a time stamp when the change occurs. However, there are
+        # cases when we are interested only in the changes coming from the
+        # other side and should therefore allow ignoring the time skew.
+        #
+        # This helps with initial replication or force-sync because
+        # the receiving side has no valuable changes itself yet.
+        self.step("ignore time skew for initial replication",
+                  self.__replica_ignore_initial_time_skew)
+
         self.step("setting up initial replication", self.__setup_replica)
+        self.step("prevent time skew after initial replication",
+                  self.replica_manage_time_skew)
         self.step("adding sasl mappings to the directory", self.__configure_sasl_mappings)
         self.step("updating schema", self.__update_schema)
         # See LDIFs for automember configuration during replica install
@@ -819,6 +832,7 @@ class DsInstance(service.Service):
                 cmd = 'restart_dirsrv %s' % self.serverid
                 certmonger.request_and_wait_for_cert(
                     certpath=dirname,
+                    storage='NSSDB',
                     nickname=self.nickname,
                     principal=self.principal,
                     passwd_fname=dsdb.passwd_fname,
@@ -826,7 +840,8 @@ class DsInstance(service.Service):
                     ca='IPA',
                     profile=dogtag.DEFAULT_PROFILE,
                     dns=[self.fqdn],
-                    post_command=cmd)
+                    post_command=cmd
+                )
             finally:
                 if prev_helper is not None:
                     certmonger.modify_ca_helper('IPA', prev_helper)
@@ -865,7 +880,11 @@ class DsInstance(service.Service):
             nsSSLToken=["internal (software)"],
             nsSSLActivation=["on"],
         )
-        conn.add_entry(entry)
+        try:
+            conn.add_entry(entry)
+        except errors.DuplicateEntry:
+            # 389-DS >= 1.4.0 has a default entry, update it.
+            conn.update_entry(entry)
 
         conn.unbind()
 
@@ -921,7 +940,7 @@ class DsInstance(service.Service):
         conn.simple_bind(bind_dn=ipaldap.DIRMAN_DN,
                          bind_password=self.dm_password)
 
-        self.import_ca_certs(dsdb, self.ca_is_configured, conn)
+        self.export_ca_certs_nssdb(dsdb, self.ca_is_configured, conn)
 
         conn.unbind()
 
@@ -934,8 +953,35 @@ class DsInstance(service.Service):
     def __add_replication_acis(self):
         self._ldap_mod("replica-acis.ldif", self.sub_dict)
 
+    def __replica_ignore_initial_time_skew(self):
+        self.replica_manage_time_skew(prevent=False)
+
+    def replica_manage_time_skew(self, prevent=True):
+        if prevent:
+            self.sub_dict['SKEWVALUE'] = 'off'
+        else:
+            self.sub_dict['SKEWVALUE'] = 'on'
+        self._ldap_mod("replica-prevent-time-skew.ldif", self.sub_dict)
+
     def __setup_s4u2proxy(self):
-        self._ldap_mod("replica-s4u2proxy.ldif", self.sub_dict)
+
+        def __add_principal(last_cn, principal, self):
+            dn = DN(('cn', last_cn), ('cn', 's4u2proxy'),
+                    ('cn', 'etc'), self.suffix)
+
+            value = '{principal}/{fqdn}@{realm}'.format(fqdn=self.fqdn,
+                                                        realm=self.realm,
+                                                        principal=principal)
+
+            entry = api.Backend.ldap2.get_entry(dn, ['memberPrincipal'])
+            try:
+                entry['memberPrincipal'].append(value)
+                api.Backend.ldap2.update_entry(entry)
+            except errors.EmptyModlist:
+                pass
+
+        __add_principal('ipa-http-delegation', 'HTTP', self)
+        __add_principal('ipa-ldap-delegation-targets', 'ldap', self)
 
     def __create_indices(self):
         self._ldap_mod("indices.ldif")
@@ -1135,30 +1181,6 @@ class DsInstance(service.Service):
 
         return status
 
-    def tune_nofile(self, num=8192):
-        """
-        Increase the number of files descriptors available to directory server
-        from the default 1024 to 8192. This will allow to support a greater
-        number of clients out of the box.
-        """
-
-        # Do the platform-specific changes
-        proceed = services.knownservices.dirsrv.tune_nofile_platform(
-                    num=num, fstore=self.fstore)
-
-        if proceed:
-            # finally change also DS configuration
-            # NOTE: dirsrv will not allow you to set max file descriptors unless
-            # the user limits allow it, so we have to restart dirsrv before
-            # attempting to change them in cn=config
-            self.__restart_instance()
-
-            nf_sub_dict = dict(NOFILES=str(num))
-            self._ldap_mod("ds-nfiles.ldif", nf_sub_dict)
-
-    def __tuning(self):
-        self.tune_nofile(8192)
-
     def __root_autobind(self):
         self._ldap_mod("root-autobind.ldif",
                        ldap_uri="ldap://localhost",
@@ -1287,4 +1309,8 @@ def write_certmap_conf(realm, ca_subject):
     shutil.copyfile(
         os.path.join(paths.USR_SHARE_IPA_DIR, "certmap.conf.template"),
         certmap_filename)
-    installutils.update_file(certmap_filename, '$ISSUER_DN', str(ca_subject))
+    installutils.update_file(
+        certmap_filename,
+        '$ISSUER_DN',  # lgtm [py/regex/unmatchable-dollar]
+        str(ca_subject)
+    )

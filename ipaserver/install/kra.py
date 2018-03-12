@@ -100,7 +100,7 @@ def install(api, replica_config, options):
                     replica_config.dirman_password)
         else:
             cafile = os.path.join(replica_config.dir, 'cacert.p12')
-            if not ipautil.file_exists(cafile):
+            if not os.path.isfile(cafile):
                 raise RuntimeError(
                     "Unable to clone KRA."
                     "  cacert.p12 file not found in replica file")
@@ -125,10 +125,15 @@ def install(api, replica_config, options):
     _service.print_msg("Restarting the directory server")
     ds = dsinstance.DsInstance()
     ds.restart()
-    kra.enable_client_auth_to_db(paths.KRA_CS_CFG_PATH)
+    kra.enable_client_auth_to_db()
 
     # Restart apache for new proxy config file
     services.knownservices.httpd.restart(capture_output=True)
+    # Restarted named-pkcs11 to restore bind-dyndb-ldap operation, see
+    # https://pagure.io/freeipa/issue/5813
+    named = services.knownservices.named  # alias for named-pkcs11
+    if named.is_running():
+        named.restart(capture_output=True)
 
 
 def uninstall():

@@ -3,14 +3,17 @@
 #
 
 import time
+import re
+from tempfile import NamedTemporaryFile
+import textwrap
 import pytest
 from ipatests.test_integration.base import IntegrationTest
 from ipatests.pytest_plugins.integration import tasks
 from ipatests.pytest_plugins.integration.tasks import (
     assert_error, replicas_cleanup)
-from ipalib.constants import DOMAIN_LEVEL_0
-from ipalib.constants import DOMAIN_LEVEL_1
-from ipalib.constants import DOMAIN_SUFFIX_NAME
+from ipalib.constants import (
+    DOMAIN_LEVEL_0, DOMAIN_LEVEL_1, DOMAIN_SUFFIX_NAME, IPA_CA_NICKNAME)
+from ipaplatform.paths import paths
 
 
 class ReplicaPromotionBase(IntegrationTest):
@@ -452,6 +455,13 @@ class TestRenewalMaster(IntegrationTest):
     def uninstall(cls, mh):
         super(TestRenewalMaster, cls).uninstall(mh)
 
+    def assertCARenewalMaster(self, host, expected):
+        """ Ensure there is only one CA renewal master set """
+        result = host.run_command(["ipa", "config-show"]).stdout_text
+        matches = list(re.finditer('IPA CA renewal master: (.*)', result))
+        assert len(matches), 1
+        assert matches[0].group(1) == expected
+
     def test_replica_not_marked_as_renewal_master(self):
         """
         https://fedorahosted.org/freeipa/ticket/5902
@@ -474,12 +484,132 @@ class TestRenewalMaster(IntegrationTest):
         assert("IPA CA renewal master: %s" % replica.hostname in result), (
             "Replica hostname not found among CA renewal masters"
         )
+        # additional check e.g. to see if there is only one renewal master
+        self.assertCARenewalMaster(replica, replica.hostname)
+
+    def test_renewal_master_with_csreplica_manage(self):
+
+        master = self.master
+        replica = self.replicas[0]
+
+        self.assertCARenewalMaster(master, replica.hostname)
+        self.assertCARenewalMaster(replica, replica.hostname)
+
+        master.run_command(['ipa-csreplica-manage', 'set-renewal-master',
+                            '-p', master.config.dirman_password])
+        result = master.run_command(["ipa", "config-show"]).stdout_text
+
+        assert("IPA CA renewal master: %s" % master.hostname in result), (
+            "Master hostname not found among CA renewal masters"
+        )
+
+        # lets give replication some time
+        time.sleep(60)
+
+        self.assertCARenewalMaster(master, master.hostname)
+        self.assertCARenewalMaster(replica, master.hostname)
+
+        replica.run_command(['ipa-csreplica-manage', 'set-renewal-master',
+                             '-p', replica.config.dirman_password])
+        result = replica.run_command(["ipa", "config-show"]).stdout_text
+
+        assert("IPA CA renewal master: %s" % replica.hostname in result), (
+            "Replica hostname not found among CA renewal masters"
+        )
+
+        self.assertCARenewalMaster(master, replica.hostname)
+        self.assertCARenewalMaster(replica, replica.hostname)
 
     def test_automatic_renewal_master_transfer_ondelete(self):
-        # Test that after master uninstallation, replica overtakes the cert
-        # renewal master role
+        # Test that after replica uninstallation, master overtakes the cert
+        # renewal master role from replica (which was previously set there)
         tasks.uninstall_master(self.replicas[0])
         result = self.master.run_command(['ipa', 'config-show']).stdout_text
         assert("IPA CA renewal master: %s" % self.master.hostname in result), (
             "Master hostname not found among CA renewal masters"
         )
+
+
+class TestReplicaInstallWithExistingEntry(IntegrationTest):
+    """replica install might fail because of existing entry for replica like
+    `cn=ipa-http-delegation,cn=s4u2proxy,cn=etc,$SUFFIX` etc. The situation
+    may arise due to incorrect uninstall of replica.
+
+    https://pagure.io/freeipa/issue/7174"""
+
+    num_replicas = 1
+
+    def test_replica_install_with_existing_entry(self):
+        master = self.master
+        tasks.install_master(master)
+        replica = self.replicas[0]
+        tf = NamedTemporaryFile()
+        ldif_file = tf.name
+        base_dn = "dc=%s" % (",dc=".join(replica.domain.name.split(".")))
+        # adding entry for replica on master so that master will have it before
+        # replica installtion begins and creates a situation for pagure-7174
+        entry_ldif = textwrap.dedent("""
+            dn: cn=ipa-http-delegation,cn=s4u2proxy,cn=etc,{base_dn}
+            changetype: modify
+            add: memberPrincipal
+            memberPrincipal: HTTP/{hostname}@{realm}
+
+            dn: cn=ipa-ldap-delegation-targets,cn=s4u2proxy,cn=etc,{base_dn}
+            changetype: modify
+            add: memberPrincipal
+            memberPrincipal: ldap/{hostname}@{realm}""").format(
+            base_dn=base_dn, hostname=replica.hostname,
+            realm=replica.domain.name.upper())
+        master.put_file_contents(ldif_file, entry_ldif)
+        arg = ['ldapmodify',
+               '-h', master.hostname,
+               '-p', '389', '-D',
+               str(master.config.dirman_dn),   # pylint: disable=no-member
+               '-w', master.config.dirman_password,
+               '-f', ldif_file]
+        master.run_command(arg)
+
+        tasks.install_replica(master, replica)
+
+
+class TestSubCAkeyReplication(IntegrationTest):
+    """
+    Test if subca key replication is not failing.
+    """
+    topology = 'line'
+    num_replicas = 1
+
+    SUBCA = 'test_subca'
+    SUBCA_CN = 'cn=' + SUBCA
+
+    PKI_DEBUG_PATH = '/var/log/pki/pki-tomcat/ca/debug'
+
+    ERR_MESS = 'Caught exception during cert/key import'
+
+    def test_sub_ca_key_replication(self):
+        master = self.master
+        replica = self.replicas[0]
+
+        result = master.run_command(['ipa', 'ca-add', self.SUBCA, '--subject',
+                                     self.SUBCA_CN])
+
+        uuid = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+        auth_id_re = re.compile('Authority ID: ({})'.format(uuid),
+                                re.IGNORECASE)
+        auth_id = "".join(re.findall(auth_id_re, result.stdout_text))
+
+        cert_nick = '{} {}'.format(IPA_CA_NICKNAME, auth_id)
+
+        # give replication some time
+        time.sleep(30)
+
+        replica.run_command(['ipa-certupdate'])
+        replica.run_command(['ipa', 'ca-show', self.SUBCA])
+
+        tasks.run_certutil(replica, ['-L', '-n', cert_nick],
+                           paths.PKI_TOMCAT_ALIAS_DIR)
+
+        pki_debug_log = replica.get_file_contents(self.PKI_DEBUG_PATH,
+                                                  encoding='utf-8')
+        # check for cert/key import error message
+        assert self.ERR_MESS not in pki_debug_log

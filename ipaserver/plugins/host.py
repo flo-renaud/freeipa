@@ -686,7 +686,7 @@ class host_add(LDAPCreate):
                 entry_attrs['objectclass'].remove('krbprincipal')
         if options.get('random'):
             entry_attrs['userpassword'] = ipa_generate_password(
-                entropy_bits=TMP_PWD_ENTROPY_BITS)
+                entropy_bits=TMP_PWD_ENTROPY_BITS, special=None)
             # save the password so it can be displayed in post_callback
             setattr(context, 'randompassword', entry_attrs['userpassword'])
 
@@ -700,7 +700,6 @@ class host_add(LDAPCreate):
 
     def post_callback(self, ldap, dn, entry_attrs, *keys, **options):
         assert isinstance(dn, DN)
-        exc = None
         if dns_container_exists(ldap):
             try:
                 parts = keys[-1].split('.')
@@ -719,18 +718,15 @@ class host_add(LDAPCreate):
 
                 update_sshfp_record(domain, unicode(parts[0]), entry_attrs)
             except Exception as e:
-                exc = e
+                self.add_message(messages.FailedToAddHostDNSRecords(reason=e))
         if options.get('random', False):
             try:
-                entry_attrs['randompassword'] = unicode(getattr(context, 'randompassword'))
+                entry_attrs['randompassword'] = unicode(
+                    getattr(context, 'randompassword'))
             except AttributeError:
                 # On the off-chance some other extension deletes this from the
                 # context, don't crash.
                 pass
-        if exc:
-            raise errors.NonFatalError(
-                reason=_('The host was added but the DNS update failed with: %(exc)s') % dict(exc=exc)
-            )
         set_certificate_attrs(entry_attrs)
         set_kerberos_attrs(entry_attrs, options)
         rename_ipaallowedtoperform_from_ldap(entry_attrs, options)
@@ -899,7 +895,7 @@ class host_mod(LDAPUpdate):
             try:
                 entry_attrs_old = ldap.get_entry(dn, ['usercertificate'])
             except errors.NotFound:
-                self.obj.handle_not_found(*keys)
+                raise self.obj.handle_not_found(*keys)
             old_certs = entry_attrs_old.get('usercertificate', [])
             removed_certs = set(old_certs) - set(certs)
             for cert in removed_certs:
@@ -931,7 +927,7 @@ class host_mod(LDAPUpdate):
                 result = api.Command['dnszone_show'](domain)['result']
                 domain = result['idnsname'][0]
             except errors.NotFound:
-                self.obj.handle_not_found(*keys)
+                raise self.obj.handle_not_found(*keys)
             update_sshfp_record(domain, unicode(parts[0]), entry_attrs)
 
         if 'ipasshpubkey' in entry_attrs:
@@ -1020,7 +1016,7 @@ class host_find(LDAPSearch):
                     try:
                         entry_attrs = ldap.get_entry(dn, ['managedby'])
                     except errors.NotFound:
-                        self.obj.handle_not_found(pkey)
+                        raise self.obj.handle_not_found(pkey)
                     hosts.append(set(entry_attrs.get('managedby', '')))
                 hosts = list(reduce(lambda s1, s2: s1 & s2, hosts))
 
@@ -1037,7 +1033,7 @@ class host_find(LDAPSearch):
                     try:
                         entry_attrs = ldap.get_entry(dn, ['managedby'])
                     except errors.NotFound:
-                        self.obj.handle_not_found(pkey)
+                        raise self.obj.handle_not_found(pkey)
                     not_hosts += entry_attrs.get('managedby', [])
                 not_hosts = list(set(not_hosts))
 
@@ -1191,7 +1187,7 @@ class host_disable(LDAPQuery):
         try:
             entry_attrs = ldap.get_entry(dn, ['usercertificate'])
         except errors.NotFound:
-            self.obj.handle_not_found(*keys)
+            raise self.obj.handle_not_found(*keys)
         if self.api.Command.ca_is_enabled()['result']:
             certs = self.api.Command.cert_find(host=keys)['result']
 

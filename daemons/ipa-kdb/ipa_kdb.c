@@ -522,6 +522,7 @@ static krb5_error_code ipadb_init_module(krb5_context kcontext,
     if (!ipactx) {
         return ENOMEM;
     }
+    ipactx->magic = IPA_CONTEXT_MAGIC;
 
     /* only check for unsupported 'temporary' value for now */
     for (i = 0; db_args != NULL && db_args[i] != NULL; i++) {
@@ -630,6 +631,7 @@ static krb5_error_code ipadb_get_age(krb5_context kcontext,
     return 0;
 }
 
+#if KRB5_KDB_DAL_MAJOR_VERSION == 5
 static void *ipadb_alloc(krb5_context context, void *ptr, size_t size)
 {
     return realloc(ptr, size);
@@ -639,6 +641,7 @@ static void ipadb_free(krb5_context context, void *ptr)
 {
     free(ptr);
 }
+#endif
 
 /* KDB Virtual Table */
 
@@ -709,7 +712,9 @@ kdb_vftabl kdb_function_table = {
 };
 #endif
 
-#if (KRB5_KDB_DAL_MAJOR_VERSION == 6) && defined(HAVE_KDB_FREEPRINCIPAL_EDATA)
+#if ((KRB5_KDB_DAL_MAJOR_VERSION == 6) || \
+     (KRB5_KDB_DAL_MAJOR_VERSION == 7)) && \
+    defined(HAVE_KDB_FREEPRINCIPAL_EDATA)
 kdb_vftabl kdb_function_table = {
     .maj_ver = KRB5_KDB_DAL_MAJOR_VERSION,
     .min_ver = 1,
@@ -742,7 +747,8 @@ kdb_vftabl kdb_function_table = {
 };
 #endif
 
-#if (KRB5_KDB_DAL_MAJOR_VERSION != 5) && (KRB5_KDB_DAL_MAJOR_VERSION != 6)
+#if (KRB5_KDB_DAL_MAJOR_VERSION != 5) && \
+    (KRB5_KDB_DAL_MAJOR_VERSION != 6) && \
+    (KRB5_KDB_DAL_MAJOR_VERSION != 7)
 #error unsupported DAL major version
 #endif
-

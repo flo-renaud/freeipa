@@ -30,7 +30,12 @@ from ipalib import api, _
 from ipalib import errors
 from ipapython import ipautil
 from ipapython.dn import DN
+from ipapython.ipaldap import ldap_initialize
 from ipaserver.install import installutils
+from ipaserver.dcerpc_common import (TRUST_BIDIRECTIONAL,
+                                     TRUST_JOIN_EXTERNAL,
+                                     trust_type_string)
+
 from ipalib.util import normalize_name
 
 import os
@@ -47,6 +52,7 @@ import samba
 
 import ldap as _ldap
 from ipapython import ipaldap
+from ipapython.dnsutil import DNSName
 from dns import resolver, rdatatype
 from dns.exception import DNSException
 import pysss_nss_idmap
@@ -74,15 +80,6 @@ and Samba4 python bindings.
 """)
 
 logger = logging.getLogger(__name__)
-
-# Both constants can be used as masks against trust direction
-# because bi-directional has two lower bits set.
-TRUST_ONEWAY = 1
-TRUST_BIDIRECTIONAL = 3
-
-# Trust join behavior
-# External trust -- allow creating trust to a non-root domain in the forest
-TRUST_JOIN_EXTERNAL = 1
 
 
 def is_sid_valid(sid):
@@ -149,6 +146,7 @@ pysss_type_key_translation_dict = {
     pysss_nss_idmap.ID_BOTH: 'both',
 }
 
+
 class TrustTopologyConflictSolved(Exception):
     """
     Internal trust error: raised when previously detected
@@ -184,17 +182,13 @@ def assess_dcerpc_error(error):
 
 
 class ExtendedDNControl(LDAPControl):
-    # This class attempts to implement LDAP control that would work
-    # with both python-ldap 2.4.x and 2.3.x, thus there is mix of properties
-    # from both worlds and encodeControlValue has default parameter
     def __init__(self):
-        self.controlValue = 1
-        self.controlType = "1.2.840.113556.1.4.529"
-        self.criticality = False
-        self.integerValue = 1
-
-    def encodeControlValue(self, value=None):
-        return b'0\x03\x02\x01\x01'
+        LDAPControl.__init__(
+            self,
+            controlType="1.2.840.113556.1.4.529",
+            criticality=False,
+            encodedControlValue=b'0\x03\x02\x01\x01'
+        )
 
 
 class DomainValidator(object):
@@ -940,7 +934,7 @@ class TrustDomainInstance(object):
         # We need to do rootDSE search with LDAP_SERVER_EXTENDED_DN_OID
         # control to reveal the SID
         ldap_uri = 'ldap://%s' % (result.pdc_dns_name)
-        conn = _ldap.initialize(ldap_uri)
+        conn = ldap_initialize(ldap_uri)
         conn.set_option(_ldap.OPT_SERVER_CONTROLS, [ExtendedDNControl()])
         search_result = None
         try:
@@ -1266,9 +1260,26 @@ class TrustDomainInstance(object):
             dname = lsa.String()
             dname.string = another_domain.info['dns_domain']
             res = self._pipe.QueryTrustedDomainInfoByName(
-                                self._policy_handle,
-                                dname,
-                                lsa.LSA_TRUSTED_DOMAIN_INFO_FULL_INFO)
+                self._policy_handle,
+                dname,
+                lsa.LSA_TRUSTED_DOMAIN_INFO_FULL_INFO
+            )
+            if res.info_ex.trust_type != lsa.LSA_TRUST_TYPE_UPLEVEL:
+                msg = _('There is already a trust to {ipa_domain} with '
+                        'unsupported type {trust_type}. Please remove '
+                        'it manually on AD DC side.')
+                ttype = trust_type_string(
+                    res.info_ex.trust_type, res.info_ex.trust_attributes
+                )
+                err = unicode(msg).format(
+                    ipa_domain=another_domain.info['dns_domain'],
+                    trust_type=ttype)
+
+                raise errors.ValidationError(
+                    name=_('AD domain controller'),
+                    error=err
+                )
+
             self._pipe.DeleteTrustedDomain(self._policy_handle,
                                            res.info_ex.sid)
         except RuntimeError as e:
@@ -1601,7 +1612,22 @@ class TrustDomainJoins(object):
                      entry.single_value.get('modifytimestamp').timetuple()
                 )*1e7+116444736000000000)
 
+        forest = DNSName(self.local_domain.info['dns_forest'])
+        # tforest is IPA forest. keep the line below for future checks
+        # tforest = DNSName(self.remote_domain.info['dns_forest'])
         for dom in realm_domains['associateddomain']:
+            d = DNSName(dom)
+
+            # We should skip all DNS subdomains of our forest
+            # because we are going to add *.<forest> TLN anyway
+            if forest.is_superdomain(d) and forest != d:
+                continue
+
+            # We also should skip single label TLDs as they
+            # cannot be added as TLNs
+            if len(d.labels) == 1:
+                continue
+
             ftinfo = dict()
             ftinfo['rec_name'] = dom
             ftinfo['rec_time'] = trust_timestamp

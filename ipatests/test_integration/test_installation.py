@@ -111,6 +111,7 @@ class ADTrustInstallTestBase(IntegrationTest):
 # Master X Replicas installation tests
 ##
 
+@pytest.mark.xfail(reason="FreeIPA ticket 7008")
 class TestInstallWithCA1(InstallTestBase1):
 
     @classmethod
@@ -133,6 +134,7 @@ class TestInstallWithCA1(InstallTestBase1):
         super(TestInstallWithCA1, self).test_replica2_ipa_dns_install()
 
 
+@pytest.mark.xfail(reason="FreeIPA ticket 7008")
 class TestInstallWithCA2(InstallTestBase2):
 
     @classmethod
@@ -172,6 +174,7 @@ class TestInstallWithCA_KRA2(InstallTestBase2):
         tasks.install_master(cls.master, setup_dns=False, setup_kra=True)
 
 
+@pytest.mark.xfail(reason="FreeIPA ticket 7008")
 class TestInstallWithCA_DNS1(InstallTestBase1):
 
     @classmethod
@@ -194,6 +197,7 @@ class TestInstallWithCA_DNS1(InstallTestBase1):
         super(TestInstallWithCA_DNS1, self).test_replica2_ipa_dns_install()
 
 
+@pytest.mark.xfail(reason="FreeIPA ticket 7008")
 class TestInstallWithCA_DNS2(InstallTestBase2):
 
     @classmethod
@@ -312,3 +316,45 @@ class TestInstallMasterDNS(IntegrationTest):
 
     def test_install_kra(self):
         tasks.install_kra(self.master, first_instance=True)
+
+
+class TestInstallMasterReservedIPasForwarder(IntegrationTest):
+    """Test to check if IANA reserved IP doesn't accepted as DNS forwarder
+
+    IANA reserved IP address can not be used as a forwarder.
+    This test checks if ipa server installation throws an error when
+    0.0.0.0 is specified as forwarder IP address.
+
+    related ticket: https://pagure.io/freeipa/issue/6894
+    """
+
+    def test_reserved_ip_as_forwarder(self):
+        args = [
+            'ipa-server-install',
+            '-n', self.master.domain.name,
+            '-r', self.master.domain.realm,
+            '-p', self.master.config.dirman_password,
+            '-a', self.master.config.admin_password,
+            '--setup-dns',
+            '--forwarder', '0.0.0.0',
+            '--auto-reverse']
+        cmd = self.master.run_command(args, raiseonerr=False)
+        assert cmd.returncode == 2
+        exp_str = ("error: option --forwarder: invalid IP address 0.0.0.0: "
+                   "cannot use IANA reserved IP address 0.0.0.0")
+        assert exp_str in cmd.stderr_text
+
+        server_install_options = (
+                "yes\n\n\n\n"
+                "{dm_pass}\n{dm_pass}"
+                "\n{admin_pass}\n{admin_pass}\n"
+                "yes\nyes\n0.0.0.0\n".format(
+                    dm_pass=self.master.config.dirman_password,
+                    admin_pass=self.master.config.admin_password))
+
+        cmd = self.master.run_command(['ipa-server-install'],
+                                      stdin_text=server_install_options,
+                                      raiseonerr=False)
+        exp_str = ("Invalid IP Address 0.0.0.0: cannot use IANA reserved "
+                   "IP address 0.0.0.0")
+        assert exp_str in cmd.stdout_text

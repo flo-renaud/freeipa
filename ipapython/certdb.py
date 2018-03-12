@@ -16,6 +16,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
+from __future__ import absolute_import
 
 import collections
 import logging
@@ -24,36 +25,28 @@ import io
 import pwd
 import grp
 import re
+import stat
 import tempfile
 from tempfile import NamedTemporaryFile
 import shutil
 
 import cryptography.x509
 
+from ipaplatform.paths import paths
+from ipaplatform.tasks import tasks
 from ipapython.dn import DN
 from ipapython.kerberos import Principal
 from ipapython import ipautil
 from ipalib import x509     # pylint: disable=ipa-forbidden-import
-
-try:
-    # pylint: disable=import-error,ipa-forbidden-import
-    from ipaplatform.paths import paths
-    # pylint: enable=import-error,ipa-forbidden-import
-except ImportError:
-    CERTUTIL = '/usr/bin/certutil'
-    PK12UTIL = '/usr/bin/pk12util'
-    OPENSSL = '/usr/bin/openssl'
-else:
-    CERTUTIL = paths.CERTUTIL
-    PK12UTIL = paths.PK12UTIL
-    OPENSSL = paths.OPENSSL
 
 
 logger = logging.getLogger(__name__)
 
 CA_NICKNAME_FMT = "%s IPA CA"
 
-NSS_FILES = ("cert8.db", "key3.db", "secmod.db", "pwdfile.txt")
+NSS_DBM_FILES = ("cert8.db", "key3.db", "secmod.db")
+NSS_SQL_FILES = ("cert9.db", "key4.db", "pkcs11.txt")
+NSS_FILES = NSS_DBM_FILES + NSS_SQL_FILES + ("pwdfile.txt",)
 
 TrustFlags = collections.namedtuple('TrustFlags', 'has_key trusted ca usages')
 
@@ -188,7 +181,8 @@ def verify_kdc_cert_validity(kdc_cert, ca_certs, realm):
 
         try:
             ipautil.run(
-                [OPENSSL, 'verify', '-CAfile', ca_file.name, kdc_file.name],
+                [paths.OPENSSL, 'verify', '-CAfile', ca_file.name,
+                 kdc_file.name],
                 capture_output=True)
         except ipautil.CalledProcessError as e:
             raise ValueError(e.output)
@@ -224,14 +218,60 @@ class NSSDatabase(object):
     # got too tied to IPA server details, killing reusability.
     # BaseCertDB is a class that knows nothing about IPA.
     # Generic NSS DB code should be moved here.
-    def __init__(self, nssdir=None):
+
+    def __init__(self, nssdir=None, dbtype='auto'):
         if nssdir is None:
             self.secdir = tempfile.mkdtemp()
             self._is_temporary = True
         else:
             self.secdir = nssdir
             self._is_temporary = False
+            if dbtype == 'auto':
+                dbtype = self._detect_dbtype()
+
         self.pwd_file = os.path.join(self.secdir, 'pwdfile.txt')
+        self.dbtype = None
+        self.certdb = self.keydb = self.secmod = None
+        # files in actual db
+        self.filenames = ()
+        # all files that are handled by create_db(backup=True)
+        self.backup_filenames = ()
+        self._set_filenames(dbtype)
+
+    def _detect_dbtype(self):
+        if os.path.isfile(os.path.join(self.secdir, "cert9.db")):
+            return 'sql'
+        elif os.path.isfile(os.path.join(self.secdir, "cert8.db")):
+            return 'dbm'
+        else:
+            return 'auto'
+
+    def _set_filenames(self, dbtype):
+        self.dbtype = dbtype
+        dbmfiles = (
+            os.path.join(self.secdir, "cert8.db"),
+            os.path.join(self.secdir, "key3.db"),
+            os.path.join(self.secdir, "secmod.db")
+        )
+        sqlfiles = (
+            os.path.join(self.secdir, "cert9.db"),
+            os.path.join(self.secdir, "key4.db"),
+            os.path.join(self.secdir, "pkcs11.txt")
+        )
+        if dbtype == 'dbm':
+            self.certdb, self.keydb, self.secmod = dbmfiles
+            self.filenames = dbmfiles + (self.pwd_file,)
+        elif dbtype == 'sql':
+            self.certdb, self.keydb, self.secmod = sqlfiles
+            self.filenames = sqlfiles + (self.pwd_file,)
+        elif dbtype == 'auto':
+            self.certdb = self.keydb = self.secmod = None
+            self.filenames = None
+        else:
+            raise ValueError(dbtype)
+        self.backup_filenames = (
+            self.pwd_file,
+        ) + sqlfiles + dbmfiles
 
     def close(self):
         if self._is_temporary:
@@ -243,11 +283,37 @@ class NSSDatabase(object):
     def __exit__(self, type, value, tb):
         self.close()
 
+    def _check_db(self):
+        if self.filenames is None:
+            raise RuntimeError(
+                "NSSDB '{}' not initialized.".format(self.secdir)
+            )
+
     def run_certutil(self, args, stdin=None, **kwargs):
-        new_args = [CERTUTIL, "-d", self.secdir]
-        new_args = new_args + args
+        self._check_db()
+        new_args = [
+            paths.CERTUTIL,
+            "-d", '{}:{}'.format(self.dbtype, self.secdir)
+        ]
+        new_args.extend(args)
         new_args.extend(['-f', self.pwd_file])
         return ipautil.run(new_args, stdin, **kwargs)
+
+    def run_pk12util(self, args, stdin=None, **kwargs):
+        self._check_db()
+        new_args = [
+            paths.PK12UTIL,
+            "-d", '{}:{}'.format(self.dbtype, self.secdir)
+        ]
+        new_args.extend(args)
+        return ipautil.run(new_args, stdin, **kwargs)
+
+    def exists(self):
+        """Check DB exists (all files are present)
+        """
+        if self.filenames is None:
+            return False
+        return all(os.path.isfile(filename) for filename in self.filenames)
 
     def create_db(self, user=None, group=None, mode=None, backup=False):
         """Create cert DB
@@ -257,13 +323,14 @@ class NSSDatabase(object):
         :param mode: Mode of the secdir
         :param backup: Backup the sedir files
         """
-        dirmode = 0o750
-        filemode = 0o640
-        pwdfilemode = 0o640
         if mode is not None:
             dirmode = mode
             filemode = mode & 0o666
             pwdfilemode = mode & 0o660
+        else:
+            dirmode = 0o750
+            filemode = 0o640
+            pwdfilemode = 0o640
 
         uid = -1
         gid = -1
@@ -273,9 +340,8 @@ class NSSDatabase(object):
             gid = grp.getgrnam(group).gr_gid
 
         if backup:
-            for filename in NSS_FILES:
-                path = os.path.join(self.secdir, filename)
-                ipautil.backup_file(path)
+            for filename in self.backup_filenames:
+                ipautil.backup_file(filename)
 
         if not os.path.exists(self.secdir):
             os.makedirs(self.secdir, dirmode)
@@ -288,31 +354,100 @@ class NSSDatabase(object):
                 f.write(ipautil.ipa_generate_password())
                 f.flush()
 
-        self.run_certutil(["-N", "-f", self.pwd_file])
+        # In case dbtype is auto, let certutil decide which type of DB
+        # to create.
+        if self.dbtype == 'auto':
+            dbdir = self.secdir
+        else:
+            dbdir = '{}:{}'.format(self.dbtype, self.secdir)
+        ipautil.run([
+            paths.CERTUTIL,
+            '-d', dbdir,
+            '-N',
+            '-f', self.pwd_file,
+            # -@ in case it's an old db and it must be migrated
+            '-@', self.pwd_file,
+        ])
+        self._set_filenames(self._detect_dbtype())
+        if self.filenames is None:
+            # something went wrong...
+            raise ValueError(
+                "Failed to create NSSDB at '{}'".format(self.secdir)
+            )
 
         # Finally fix up perms
         os.chown(self.secdir, uid, gid)
         os.chmod(self.secdir, dirmode)
-        for filename in NSS_FILES:
-            path = os.path.join(self.secdir, filename)
-            if os.path.exists(path):
-                os.chown(path, uid, gid)
-                if path == self.pwd_file:
+        tasks.restore_context(self.secdir, force=True)
+        for filename in self.filenames:
+            if os.path.exists(filename):
+                os.chown(filename, uid, gid)
+                if filename == self.pwd_file:
                     new_mode = pwdfilemode
                 else:
                     new_mode = filemode
-                os.chmod(path, new_mode)
+                os.chmod(filename, new_mode)
+                tasks.restore_context(filename, force=True)
+
+    def convert_db(self, rename_old=True):
+        """Convert DBM database format to SQL database format
+
+        **WARNING** **WARNING** **WARNING** **WARNING** **WARNING**
+
+        The caller must ensure that no other process or service is
+        accessing the NSSDB during migration. The DBM format does not support
+        multiple processes. If more than one process opens a DBM NSSDB for
+        writing, the database will become **irreparably corrupted**.
+
+        **WARNING** **WARNING** **WARNING** **WARNING** **WARNING**
+        """
+        if (self.dbtype == 'sql' or
+                os.path.isfile(os.path.join(self.secdir, "cert9.db"))):
+            raise ValueError(
+                'NSS DB {} has been migrated already.'.format(self.secdir)
+            )
+
+        # use certutil to migrate db to new format
+        # see https://bugzilla.mozilla.org/show_bug.cgi?id=1415912
+        # https://fedoraproject.org/wiki/Changes/NSSDefaultFileFormatSql
+        args = [
+            paths.CERTUTIL,
+            '-d', 'sql:{}'.format(self.secdir), '-N',
+            '-f', self.pwd_file, '-@', self.pwd_file
+        ]
+        ipautil.run(args)
+
+        # retain file ownership and permission, backup old files
+        migration = (
+            ('cert8.db', 'cert9.db'),
+            ('key3.db', 'key4.db'),
+            ('secmod.db', 'pkcs11.txt'),
+        )
+        for oldname, newname in migration:
+            oldname = os.path.join(self.secdir, oldname)
+            newname = os.path.join(self.secdir, newname)
+            oldstat = os.stat(oldname)
+            os.chmod(newname, stat.S_IMODE(oldstat.st_mode))
+            os.chown(newname, oldstat.st_uid, oldstat.st_gid)
+            tasks.restore_context(newname, force=True)
+
+        self._set_filenames('sql')
+        self.list_certs()  # self-test
+
+        if rename_old:
+            for oldname, _ in migration:  # pylint: disable=unused-variable
+                oldname = os.path.join(self.secdir, oldname)
+                os.rename(oldname, oldname + '.migrated')
 
     def restore(self):
-        for filename in NSS_FILES:
-            path = os.path.join(self.secdir, filename)
-            backup_path = path + '.orig'
-            save_path = path + '.ipasave'
+        for filename in self.backup_filenames:
+            backup_path = filename + '.orig'
+            save_path = filename + '.ipasave'
             try:
-                if os.path.exists(path):
-                    os.rename(path, save_path)
+                if os.path.exists(filename):
+                    os.rename(filename, save_path)
                 if os.path.exists(backup_path):
-                    os.rename(backup_path, path)
+                    os.rename(backup_path, filename)
             except OSError as e:
                 logger.debug('%s', e)
 
@@ -334,6 +469,20 @@ class NSSDatabase(object):
                 certlist.append((nickname, trust_flags))
 
         return tuple(certlist)
+
+    def list_keys(self):
+        result = self.run_certutil(
+            ["-K"], raiseonerr=False,  capture_output=True
+        )
+        if result.returncode == 255:
+            return ()
+        keylist = []
+        for line in result.output.splitlines():
+            mo = re.match(r'^<\s*(\d+)>\s+(\w+)\s+([0-9a-z]+)\s+(.*)$', line)
+            if mo is not None:
+                slot, algo, keyid, nick = mo.groups()
+                keylist.append((int(slot), algo, keyid, nick.strip()))
+        return tuple(keylist)
 
     def find_server_certs(self):
         """Return nicknames and cert flags for server certs in the database
@@ -367,16 +516,17 @@ class NSSDatabase(object):
         return root_nicknames
 
     def export_pkcs12(self, nickname, pkcs12_filename, pkcs12_passwd=None):
-        args = [PK12UTIL, "-d", self.secdir,
-                "-o", pkcs12_filename,
-                "-n", nickname,
-                "-k", self.pwd_file]
+        args = [
+            "-o", pkcs12_filename,
+            "-n", nickname,
+            "-k", self.pwd_file
+        ]
         pkcs12_password_file = None
         if pkcs12_passwd is not None:
             pkcs12_password_file = ipautil.write_tmp_file(pkcs12_passwd + '\n')
-            args = args + ["-w", pkcs12_password_file.name]
+            args.extend(["-w", pkcs12_password_file.name])
         try:
-            ipautil.run(args)
+            self.run_pk12util(args)
         except ipautil.CalledProcessError as e:
             if e.returncode == 17:
                 raise RuntimeError("incorrect password for pkcs#12 file %s" %
@@ -391,15 +541,17 @@ class NSSDatabase(object):
                 pkcs12_password_file.close()
 
     def import_pkcs12(self, pkcs12_filename, pkcs12_passwd=None):
-        args = [PK12UTIL, "-d", self.secdir,
-                "-i", pkcs12_filename,
-                "-k", self.pwd_file, '-v']
+        args = [
+            "-i", pkcs12_filename,
+            "-k", self.pwd_file,
+            "-v"
+        ]
         pkcs12_password_file = None
         if pkcs12_passwd is not None:
             pkcs12_password_file = ipautil.write_tmp_file(pkcs12_passwd + '\n')
-            args = args + ["-w", pkcs12_password_file.name]
+            args.extend(["-w", pkcs12_password_file.name])
         try:
-            ipautil.run(args)
+            self.run_pk12util(args)
         except ipautil.CalledProcessError as e:
             if e.returncode == 17:
                 raise RuntimeError("incorrect password for pkcs#12 file %s" %
@@ -500,9 +652,13 @@ class NSSDatabase(object):
                                 "Can't load private key from both %s and %s" %
                                 (key_file, filename))
 
+                        # the args -v2 aes256 -v2prf hmacWithSHA256 are needed
+                        # on OpenSSL 1.0.2 (fips mode). As soon as FreeIPA
+                        # requires OpenSSL 1.1.0 we'll be able to drop them
                         args = [
-                            OPENSSL, 'pkcs8',
+                            paths.OPENSSL, 'pkcs8',
                             '-topk8',
+                            '-v2', 'aes256', '-v2prf', 'hmacWithSHA256',
                             '-passout', 'file:' + self.pwd_file,
                         ]
                         if ((label != b'PRIVATE KEY' and key_password) or
@@ -588,7 +744,7 @@ class NSSDatabase(object):
                 out_password = ipautil.ipa_generate_password()
                 out_pwdfile = ipautil.write_tmp_file(out_password)
                 args = [
-                    OPENSSL, 'pkcs12',
+                    paths.OPENSSL, 'pkcs12',
                     '-export',
                     '-in', in_file.name,
                     '-out', out_file.name,

@@ -30,6 +30,7 @@ import os
 import socket
 import traceback
 import errno
+import sys
 
 from ctypes.util import find_library
 from functools import total_ordering
@@ -102,21 +103,27 @@ class IPAVersion(object):
 
 class RedHatTaskNamespace(BaseTaskNamespace):
 
-    def restore_context(self, filepath, restorecon=paths.SBIN_RESTORECON):
-        """
-        restore security context on the file path
+    def restore_context(self, filepath, force=False):
+        """Restore SELinux security context on the given filepath.
+
         SELinux equivalent is /path/to/restorecon <filepath>
         restorecon's return values are not reliable so we have to
         ignore them (BZ #739604).
 
         ipautil.run() will do the logging.
         """
-
-        if not selinux_enabled():
+        restorecon = paths.SBIN_RESTORECON
+        if not selinux_enabled() or not os.path.exists(restorecon):
             return
 
-        if (os.path.exists(restorecon)):
-            ipautil.run([restorecon, filepath], raiseonerr=False)
+        # Force reset of context to match file_context for customizable
+        # files, and the default file context, changing the user, role,
+        # range portion as well as the type.
+        args = [restorecon]
+        if force:
+            args.append('-F')
+        args.append(filepath)
+        ipautil.run(args, raiseonerr=False)
 
     def check_selinux_status(self, restorecon=paths.RESTORECON):
         """
@@ -151,6 +158,12 @@ class RedHatTaskNamespace(BaseTaskNamespace):
                 "this is 'lo' interface. If you do not wish to use IPv6 "
                 "globally, disable it on the specific interfaces in "
                 "sysctl.conf except 'lo' interface.")
+
+        # XXX This is a hack to work around an issue with Travis CI by
+        # skipping IPv6 address test. The Dec 2017 update removed ::1 from
+        # loopback, see https://github.com/travis-ci/travis-ci/issues/8891.
+        if os.environ.get('TRAVIS') == 'true':
+            return
 
         try:
             localhost6 = ipautil.CheckedIPAddress('::1', allow_loopback=True)
@@ -274,7 +287,7 @@ class RedHatTaskNamespace(BaseTaskNamespace):
             try:
                 subject = cert.subject_bytes
                 issuer = cert.issuer_bytes
-                serial_number = cert.serial_number
+                serial_number = cert.serial_number_bytes
                 public_key_info = cert.public_key_info_bytes
             except (PyAsn1Error, ValueError, CertificateError) as e:
                 logger.warning(
@@ -284,7 +297,7 @@ class RedHatTaskNamespace(BaseTaskNamespace):
             label = urllib.parse.quote(nickname)
             subject = urllib.parse.quote(subject)
             issuer = urllib.parse.quote(issuer)
-            serial_number = urllib.parse.quote(str(serial_number))
+            serial_number = urllib.parse.quote(serial_number)
             public_key_info = urllib.parse.quote(public_key_info)
 
             obj = ("[p11-kit-object-v1]\n"
@@ -477,6 +490,36 @@ class RedHatTaskNamespace(BaseTaskNamespace):
 
         os.chmod(paths.GSSPROXY_CONF, 0o600)
         self.restore_context(paths.GSSPROXY_CONF)
+
+    def configure_httpd_wsgi_conf(self):
+        """Configure WSGI for correct Python version (Fedora)
+
+        See https://pagure.io/freeipa/issue/7394
+        """
+        conf = paths.HTTPD_IPA_WSGI_MODULES_CONF
+        if sys.version_info.major == 2:
+            wsgi_module = constants.MOD_WSGI_PYTHON2
+        else:
+            wsgi_module = constants.MOD_WSGI_PYTHON3
+
+        if conf is None or wsgi_module is None:
+            logger.info("Nothing to do for configure_httpd_wsgi_conf")
+            return
+
+        confdir = os.path.dirname(conf)
+        if not os.path.isdir(confdir):
+            os.makedirs(confdir)
+
+        ipautil.copy_template_file(
+            os.path.join(
+                paths.USR_SHARE_IPA_DIR, 'ipa-httpd-wsgi.conf.template'
+            ),
+            conf,
+            dict(WSGI_MODULE=wsgi_module)
+        )
+
+        os.chmod(conf, 0o644)
+        self.restore_context(conf)
 
     def remove_httpd_service_ipa_conf(self):
         """Remove systemd config for httpd service of IPA"""

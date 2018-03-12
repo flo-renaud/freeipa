@@ -1,4 +1,4 @@
-#!/usr/bin/python2 -E
+#!/usr/bin/python3 -E
 #
 # Authors:
 #   Jan Cholasta <jcholast@redhat.com>
@@ -438,7 +438,7 @@ def renew_ca_cert(reuse_existing, **kwargs):
     if operation == 'SUBMIT':
         state = 'retrieve'
 
-        if is_self_signed and not reuse_existing and is_renewal_master():
+        if not reuse_existing and is_renewal_master():
             state = 'request'
 
         csr_file = paths.IPA_CA_CSR

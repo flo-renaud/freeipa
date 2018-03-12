@@ -85,6 +85,20 @@ EXAMPLES:
 
 register = Registry()
 
+
+def check_fips_auth_opts(fips_mode, **options):
+    """
+    OTP and RADIUS are not allowed in FIPS mode since they use MD5
+    checksums (OTP uses our RADIUS responder daemon ipa-otpd).
+    """
+    if 'ipauserauthtype' in options and fips_mode:
+        if ('otp' in options['ipauserauthtype'] or
+                'radius' in options['ipauserauthtype']):
+            raise errors.InvocationError(
+                'OTP and RADIUS authentication in FIPS is '
+                'not yet supported')
+
+
 @register()
 class config(LDAPObject):
     """
@@ -398,6 +412,8 @@ class config_mod(LDAPUpdate):
 
     def pre_callback(self, ldap, dn, entry_attrs, attrs_list, *keys, **options):
         assert isinstance(dn, DN)
+        check_fips_auth_opts(fips_mode=self.api.env.fips_mode, **options)
+
         if 'ipadefaultprimarygroup' in entry_attrs:
             group=entry_attrs['ipadefaultprimarygroup']
             try:
@@ -516,7 +532,7 @@ class config_mod(LDAPUpdate):
             try:
                 self.api.Object.server.get_dn_if_exists(new_master)
             except errors.NotFound:
-                self.api.Object.server.handle_not_found(new_master)
+                raise self.api.Object.server.handle_not_found(new_master)
 
             backend = self.api.Backend.serverroles
             backend.config_update(ca_renewal_master_server=new_master)

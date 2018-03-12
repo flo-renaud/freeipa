@@ -29,7 +29,6 @@ import math
 import os
 import sys
 import copy
-import stat
 import shutil
 import socket
 import re
@@ -42,7 +41,6 @@ import grp
 from contextlib import contextmanager
 import locale
 import collections
-from subprocess import CalledProcessError
 
 from dns import resolver, reversename
 from dns.exception import DNSException
@@ -233,6 +231,7 @@ class CheckedIPAddress(UnsafeIPAddress):
 
                 if ifnet.ip == self:
                     return InterfaceDetails(interface, ifnet)
+        return None
 
     def set_ip_net(self, ifnet):
         """Set IP Network details for this address. IPNetwork is valid only
@@ -243,6 +242,25 @@ class CheckedIPAddress(UnsafeIPAddress):
         """
         assert isinstance(ifnet, netaddr.IPNetwork)
         self._net = ifnet
+
+
+class CheckedIPAddressLoopback(CheckedIPAddress):
+    """IPv4 or IPv6 address with additional constraints with
+    possibility to use a loopback IP.
+    Reserved or link-local addresses are never accepted.
+    """
+    def __init__(self, addr, parse_netmask=True, allow_multicast=False):
+
+        super(CheckedIPAddressLoopback, self).__init__(
+                addr, parse_netmask=parse_netmask,
+                allow_multicast=allow_multicast,
+                allow_loopback=True)
+
+        if self.is_loopback():
+            # print is being used instead of a logger, because at this
+            # moment, in execution process, there is no logger configured
+            print("WARNING: You are using a loopback IP: {}".format(addr),
+                  file=sys.stderr)
 
 
 def valid_ip(addr):
@@ -308,6 +326,25 @@ def write_tmp_file(txt):
 
     return fd
 
+
+def flush_sync(f):
+    """Flush and fsync file to disk
+
+    :param f: a file object with fileno and name
+    """
+    # flush file buffer to file descriptor
+    f.flush()
+    # flush Kernel buffer to disk
+    os.fsync(f.fileno())
+    # sync metadata in directory
+    dirname = os.path.dirname(os.path.abspath(f.name))
+    dirfd = os.open(dirname, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(dirfd)
+    finally:
+        os.close(dirfd)
+
+
 def shell_quote(string):
     if isinstance(string, str):
         return "'" + string.replace("'", "'\\''") + "'"
@@ -315,21 +352,32 @@ def shell_quote(string):
         return b"'" + string.replace(b"'", b"'\\''") + b"'"
 
 
-if six.PY3:
-    def _log_arg(s):
-        """Convert string or bytes to a string suitable for logging"""
-        if isinstance(s, bytes):
-            return s.decode(locale.getpreferredencoding(),
-                            errors='replace')
-        else:
-            return s
-else:
-    _log_arg = str
-
-
 class _RunResult(collections.namedtuple('_RunResult',
                                         'output error_output returncode')):
     """Result of ipautil.run"""
+
+
+class CalledProcessError(subprocess.CalledProcessError):
+    """CalledProcessError with stderr
+
+    Hold stderr of failed call and print it in repr() to simplify debugging.
+    """
+    def __init__(self, returncode, cmd, output=None, stderr=None):
+        super(CalledProcessError, self).__init__(returncode, cmd, output)
+        self.stderr = stderr
+
+    def __str__(self):
+        args = [
+            self.__class__.__name__, '('
+            'Command {!s} '.format(self.cmd),
+            'returned non-zero exit status {!r}'.format(self.returncode)
+        ]
+        if self.stderr is not None:
+            args.append(': {!r}'.format(self.stderr))
+        args.append(')')
+        return ''.join(args)
+
+    __repr__ = __str__
 
 
 def run(args, stdin=None, raiseonerr=True, nolog=(), env=None,
@@ -439,7 +487,7 @@ def run(args, stdin=None, raiseonerr=True, nolog=(), env=None,
     if six.PY3 and isinstance(stdin, str):
         stdin = stdin.encode(encoding)
 
-    arg_string = nolog_replace(' '.join(_log_arg(a) for a in args), nolog)
+    arg_string = nolog_replace(repr(args), nolog)
     logger.debug('Starting external process')
     logger.debug('args=%s', arg_string)
 
@@ -520,7 +568,9 @@ def run(args, stdin=None, raiseonerr=True, nolog=(), env=None,
         error_output = None
 
     if p.returncode != 0 and raiseonerr:
-        raise CalledProcessError(p.returncode, arg_string, str(output))
+        raise CalledProcessError(
+            p.returncode, arg_string, output_log, error_log
+        )
 
     result = _RunResult(output, error_output, p.returncode)
     result.raw_output = stdout
@@ -543,31 +593,16 @@ def nolog_replace(string, nolog):
     return string
 
 
-def file_exists(filename):
-    try:
-        mode = os.stat(filename)[stat.ST_MODE]
-        return bool(stat.S_ISREG(mode))
-    except Exception:
-        return False
-
-def dir_exists(filename):
-    try:
-        mode = os.stat(filename)[stat.ST_MODE]
-        return bool(stat.S_ISDIR(mode))
-    except Exception:
-        return False
-
-
 def install_file(fname, dest):
     # SELinux: use copy to keep the right context
-    if file_exists(dest):
+    if os.path.isfile(dest):
         os.rename(dest, dest + ".orig")
     shutil.copy(fname, dest)
     os.remove(fname)
 
 
 def backup_file(fname):
-    if file_exists(fname):
+    if os.path.isfile(fname):
         os.rename(fname, fname + ".orig")
 
 
@@ -906,7 +941,7 @@ def ipa_generate_password(entropy_bits=256, uppercase=1, lowercase=1, digits=1,
 
 
 def user_input(prompt, default = None, allow_empty = True):
-    if default == None:
+    if default is None:
         while True:
             try:
                 ret = input("%s: " % prompt)
@@ -957,6 +992,8 @@ def user_input(prompt, default = None, allow_empty = True):
                 return default
             else:
                 return ret
+
+    return None
 
 
 def host_port_open(host, port, socket_type=socket.SOCK_STREAM,

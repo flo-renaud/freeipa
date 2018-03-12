@@ -32,6 +32,20 @@ from optparse import OptionGroup, SUPPRESS_HELP
 
 import dns.resolver
 import six
+
+from ipaserver.install import certs, installutils, bindinstance, dsinstance, ca
+from ipaserver.install.replication import enable_replication_version_checking
+from ipaserver.install.server.replicainstall import install_ca_cert
+from ipaserver.install.bindinstance import (
+    add_zone, add_fwd_rr, add_ptr_rr, dns_container_exists)
+from ipapython import ipautil, admintool, certdb
+from ipapython.dn import DN
+from ipapython import version
+from ipalib import api
+from ipalib import errors
+from ipaplatform.paths import paths
+from ipalib.constants import DOMAIN_LEVEL_0
+
 # pylint: disable=import-error
 if six.PY3:
     # The SafeConfigParser class has been renamed to ConfigParser in Py3
@@ -40,18 +54,6 @@ else:
     from ConfigParser import SafeConfigParser
 # pylint: enable=import-error
 
-from ipaserver.install import certs, installutils, bindinstance, dsinstance, ca
-from ipaserver.install.replication import enable_replication_version_checking
-from ipaserver.install.server.replicainstall import install_ca_cert
-from ipaserver.install.bindinstance import (
-    add_zone, add_fwd_rr, add_ptr_rr, dns_container_exists)
-from ipapython import ipautil, admintool
-from ipapython.dn import DN
-from ipapython import version
-from ipalib import api
-from ipalib import errors
-from ipaplatform.paths import paths
-from ipalib.constants import DOMAIN_LEVEL_0
 
 logger = logging.getLogger(__name__)
 
@@ -180,7 +182,7 @@ class ReplicaPrepare(admintool.AdminTool):
 
         config_dir = dsinstance.config_dirname(
             installutils.realm_to_serverid(api.env.realm))
-        if not ipautil.dir_exists(config_dir):
+        if not os.path.isdir(config_dir):
             raise admintool.ScriptError(
                 "could not find directory instance: %s" % config_dir)
 
@@ -195,6 +197,8 @@ class ReplicaPrepare(admintool.AdminTool):
     def ask_for_options(self):
         options = self.options
         super(ReplicaPrepare, self).ask_for_options()
+        http_ca_cert = None
+        dirsrv_ca_cert = None
 
         # get the directory manager password
         self.dirman_password = options.password
@@ -225,7 +229,7 @@ class ReplicaPrepare(admintool.AdminTool):
         except errors.DatabaseError as e:
             raise admintool.ScriptError(e.desc)
 
-        if ca_enabled and not ipautil.file_exists(paths.CA_CS_CFG_PATH):
+        if ca_enabled and not os.path.isfile(paths.CA_CS_CFG_PATH):
             raise admintool.ScriptError(
                 "CA is not installed on this server. "
                 "ipa-replica-prepare must be run on an IPA server with CA.")
@@ -358,7 +362,7 @@ class ReplicaPrepare(admintool.AdminTool):
             logger.info("Copying SSL certificate for the Directory Server")
             self.copy_info_file(self.dirsrv_pkcs12_file.name, "dscert.p12")
         else:
-            if ipautil.file_exists(options.ca_file):
+            if os.path.isfile(options.ca_file):
                 # Since it is possible that the Directory Manager password
                 # has changed since ipa-server-install, we need to regenerate
                 # the CA PKCS#12 file and update the pki admin user password
@@ -404,7 +408,7 @@ class ReplicaPrepare(admintool.AdminTool):
         logger.info("Copying additional files")
 
         cacert_filename = paths.CACERT_PEM
-        if ipautil.file_exists(cacert_filename):
+        if os.path.isfile(cacert_filename):
             self.copy_info_file(cacert_filename, "cacert.pem")
         self.copy_info_file(paths.IPA_DEFAULT_CONF, "default.conf")
 
@@ -565,13 +569,12 @@ class ReplicaPrepare(admintool.AdminTool):
                 installutils.remove_file(pkcs12_fname)
                 installutils.remove_file(passwd_fname)
 
-            self.remove_info_file("cert8.db")
-            self.remove_info_file("key3.db")
-            self.remove_info_file("secmod.db")
+            for fname in (certdb.NSS_DBM_FILES + certdb.NSS_SQL_FILES):
+                self.remove_info_file(fname)
             self.remove_info_file("noise.txt")
 
             orig_filename = passwd_fname + ".orig"
-            if ipautil.file_exists(orig_filename):
+            if os.path.isfile(orig_filename):
                 installutils.remove_file(orig_filename)
         except errors.CertificateOperationError as e:
             raise admintool.ScriptError(str(e))

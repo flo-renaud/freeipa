@@ -27,20 +27,13 @@ import ldif
 import itertools
 
 import six
-# pylint: disable=import-error
-if six.PY3:
-    # The SafeConfigParser class has been renamed to ConfigParser in Py3
-    from configparser import ConfigParser as SafeConfigParser
-else:
-    from ConfigParser import SafeConfigParser
-# pylint: enable=import-error
 
 from ipaclient.install.client import update_ipa_nssdb
 from ipalib import api, errors
 from ipalib.constants import FQDN
 from ipapython import version, ipautil
 from ipapython.ipautil import run, user_input
-from ipapython import admintool
+from ipapython import admintool, certdb
 from ipapython.dn import DN
 from ipaserver.install.replication import (wait_for_task, ReplicationManager,
                                            get_cs_replication_manager)
@@ -57,6 +50,14 @@ try:
     from ipaserver.install import adtrustinstance
 except ImportError:
     adtrustinstance = None
+
+# pylint: disable=import-error
+if six.PY3:
+    # The SafeConfigParser class has been renamed to ConfigParser in Py3
+    from configparser import ConfigParser as SafeConfigParser
+else:
+    from ConfigParser import SafeConfigParser
+# pylint: enable=import-error
 
 logger = logging.getLogger(__name__)
 
@@ -121,9 +122,11 @@ class RemoveRUVParser(ldif.LDIFParser):
             elif name == 'nsuniqueid':
                 nsuniqueid = [x.lower() for x in value]
 
-        if (objectclass and nsuniqueid and
-            'nstombstone' in objectclass and
-            'ffffffff-ffffffff-ffffffff-ffffffff' in nsuniqueid):
+        if (
+            objectclass and nsuniqueid and
+            b'nstombstone' in objectclass and
+            b'ffffffff-ffffffff-ffffffff-ffffffff' in nsuniqueid
+        ):
             logger.debug("Removing RUV entry %s", dn)
             return
 
@@ -314,6 +317,9 @@ class Restore(admintool.AdminTool):
         os.chown(self.dir, pent.pw_uid, pent.pw_gid)
 
         cwd = os.getcwd()
+
+        logger.info("Temporary setting umask to 022")
+        old_umask = os.umask(0o022)
         try:
             dirsrv = services.knownservices.dirsrv
 
@@ -373,7 +379,7 @@ class Restore(admintool.AdminTool):
                     dirsrv.start(capture_output=False)
             else:
                 logger.info('Stopping IPA services')
-                result = run(['ipactl', 'stop'], raiseonerr=False)
+                result = run([paths.IPACTL, 'stop'], raiseonerr=False)
                 if result.returncode not in [0, 6]:
                     logger.warning('Stopping IPA failed: %s', result.error_log)
 
@@ -413,10 +419,16 @@ class Restore(admintool.AdminTool):
                 gssproxy = services.service('gssproxy', api)
                 gssproxy.reload_or_restart()
                 logger.info('Starting IPA services')
-                run(['ipactl', 'start'])
+                run([paths.IPACTL, 'start'])
                 logger.info('Restarting SSSD')
                 sssd = services.service('sssd', api)
                 sssd.restart()
+                logger.info('Restarting oddjobd')
+                oddjobd = services.service('oddjobd', api)
+                if not oddjobd.is_enabled():
+                    logger.info("Enabling oddjobd")
+                    oddjobd.enable()
+                oddjobd.start()
                 http.remove_httpd_ccaches()
                 # have the daemons pick up their restored configs
                 run([paths.SYSTEMCTL, "--system", "daemon-reload"])
@@ -426,6 +438,8 @@ class Restore(admintool.AdminTool):
             except Exception as e:
                 logger.error('Cannot change directory to %s: %s', cwd, e)
             shutil.rmtree(self.top_dir)
+            logger.info("Restoring umask to %s", old_umask)
+            os.umask(old_umask)
 
 
     def get_connection(self):
@@ -547,7 +561,7 @@ class Restore(admintool.AdminTool):
             os.chown(ldifdir, pent.pw_uid, pent.pw_gid)
 
         ipautil.backup_file(ldiffile)
-        with open(ldiffile, 'wb') as out_file:
+        with open(ldiffile, 'w') as out_file:
             ldif_writer = ldif.LDIFWriter(out_file)
             with open(srcldiffile, 'rb') as in_file:
                 ldif_parser = RemoveRUVParser(in_file, ldif_writer)
@@ -834,13 +848,13 @@ class Restore(admintool.AdminTool):
         try:
             dsinstance.DsInstance().stop_tracking_certificates(
                 installutils.realm_to_serverid(api.env.realm))
-        except OSError:
+        except (OSError, IOError):
             # When IPA is not installed, DS NSS DB does not exist
             pass
 
         krbinstance.KrbInstance().stop_tracking_certs()
 
-        for basename in ('cert8.db', 'key3.db', 'secmod.db', 'pwdfile.txt'):
+        for basename in certdb.NSS_FILES:
             filename = os.path.join(paths.IPA_NSSDB_DIR, basename)
             try:
                 ipautil.backup_file(filename)

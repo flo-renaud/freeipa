@@ -40,11 +40,13 @@ from ipapython import ipautil
 from ipapython.certdb import EMPTY_TRUST_FLAGS, IPA_CA_TRUST_FLAGS
 from ipapython.certdb import get_ca_nickname, find_cert_from_txt, NSSDatabase
 from ipapython.dn import DN
-from ipalib import pkcs10, x509, api
+from ipalib import x509, api
 from ipalib.errors import CertificateOperationError
 from ipalib.install import certstore
+from ipalib.util import strip_csr_header
 from ipalib.text import _
 from ipaplatform.paths import paths
+
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +87,46 @@ def export_pem_p12(pkcs12_fname, pkcs12_pwd_fname, nickname, pem_fname):
                  "-passout", "file:" + pkcs12_pwd_fname])
 
 
+def pkcs12_to_certkeys(p12_fname, p12_passwd=None):
+    """
+    Deserializes pkcs12 file to python objects
+
+    :param p12_fname: A PKCS#12 filename
+    :param p12_passwd: Optional password for the pkcs12_fname file
+    """
+    args = [paths.OPENSSL, "pkcs12", "-in", p12_fname, "-nodes"]
+    if p12_passwd:
+        pwd = ipautil.write_tmp_file(p12_passwd)
+        args.extend(["-passin", "file:{fname}".format(fname=pwd.name)])
+    else:
+        args.extend(["-passin", "pass:"])
+
+    pems = ipautil.run(args, capture_output=True).raw_output
+
+    certs = x509.load_certificate_list(pems)
+    priv_keys = x509.load_private_key_list(pems)
+
+    return (certs, priv_keys)
+
+
+def is_ipa_issued_cert(api, cert):
+    """
+    Return True if the certificate has been issued by IPA
+
+    Note that this method can only be executed if the api has been
+    initialized.
+
+    :param api: The pre-initialized IPA API
+    :param cert: The IPACertificate certificiate to test
+    """
+    cacert_subject = certstore.get_ca_subject(
+        api.Backend.ldap2,
+        api.env.container_ca,
+        api.env.basedn)
+
+    return DN(cert.issuer) == cacert_subject
+
+
 class CertDB(object):
     """An IPA-server-specific wrapper around NSS
 
@@ -102,18 +144,16 @@ class CertDB(object):
     # TODO: Remove all selfsign code
     def __init__(self, realm, nssdir, fstore=None,
                  host_name=None, subject_base=None, ca_subject=None,
-                 user=None, group=None, mode=None, create=False):
-        self.nssdb = NSSDatabase(nssdir)
+                 user=None, group=None, mode=None, create=False,
+                 dbtype='auto'):
+        self.nssdb = NSSDatabase(nssdir, dbtype=dbtype)
 
-        self.secdir = nssdir
         self.realm = realm
 
-        self.noise_fname = self.secdir + "/noise.txt"
-        self.certdb_fname = self.secdir + "/cert8.db"
-        self.keydb_fname = self.secdir + "/key3.db"
-        self.secmod_fname = self.secdir + "/secmod.db"
-        self.pk12_fname = self.secdir + "/cacert.p12"
-        self.pin_fname = self.secdir + "/pin.txt"
+        self.noise_fname = os.path.join(self.secdir, "noise.txt")
+
+        self.pk12_fname = os.path.join(self.secdir, "cacert.p12")
+        self.pin_fname = os.path.join(self.secdir + "pin.txt")
         self.reqdir = None
         self.certreq_fname = None
         self.certder_fname = None
@@ -162,6 +202,27 @@ class CertDB(object):
     ca_subject = ipautil.dn_attribute_property('_ca_subject')
     subject_base = ipautil.dn_attribute_property('_subject_base')
 
+    # migration changes paths, just forward attribute lookup to nssdb
+    @property
+    def secdir(self):
+        return self.nssdb.secdir
+
+    @property
+    def dbtype(self):
+        return self.nssdb.dbtype
+
+    @property
+    def certdb_fname(self):
+        return self.nssdb.certdb
+
+    @property
+    def keydb_fname(self):
+        return self.nssdb.keydb
+
+    @property
+    def secmod_fname(self):
+        return self.nssdb.secmod
+
     @property
     def passwd_fname(self):
         return self.nssdb.pwd_file
@@ -170,18 +231,7 @@ class CertDB(object):
         """
         Checks whether all NSS database files + our pwd_file exist
         """
-        db_files = (
-            self.secdir,
-            self.certdb_fname,
-            self.keydb_fname,
-            self.secmod_fname,
-            self.nssdb.pwd_file,
-        )
-
-        for f in db_files:
-            if not os.path.exists(f):
-                return False
-        return True
+        return self.nssdb.exists()
 
     def __del__(self):
         if self.reqdir is not None:
@@ -227,7 +277,7 @@ class CertDB(object):
         return self.nssdb.run_certutil(args, stdin, **kwargs)
 
     def create_noise_file(self):
-        if ipautil.file_exists(self.noise_fname):
+        if os.path.isfile(self.noise_fname):
             os.remove(self.noise_fname)
         with open(self.noise_fname, "w") as f:
             self.set_perms(f)
@@ -243,8 +293,10 @@ class CertDB(object):
                 f.write(ipautil.ipa_generate_password())
 
     def create_certdbs(self):
-        self.nssdb.create_db(user=self.user, group=self.group, mode=self.mode,
-                             backup=True)
+        self.nssdb.create_db(
+            user=self.user, group=self.group, mode=self.mode,
+            backup=True
+        )
         self.set_perms(self.passwd_fname, write=True)
 
     def restore(self):
@@ -290,11 +342,12 @@ class CertDB(object):
 
         if create_pkcs12:
             ipautil.backup_file(self.pk12_fname)
-            ipautil.run([paths.PK12UTIL, "-d", self.secdir,
-                         "-o", self.pk12_fname,
-                         "-n", self.cacert_name,
-                         "-w", self.passwd_fname,
-                         "-k", self.passwd_fname])
+            self.nssdb.run_pk12util([
+                "-o", self.pk12_fname,
+                "-n", self.cacert_name,
+                "-k", self.passwd_fname,
+                "-w", self.passwd_fname,
+            ])
             self.set_perms(self.pk12_fname)
 
     def load_cacert(self, cacert_fname, trust_flags):
@@ -409,11 +462,11 @@ class CertDB(object):
         if self.host_name is None:
             raise RuntimeError("CA Host is not set.")
 
-        with open(certreq_fname, "r") as f:
+        with open(certreq_fname, "rb") as f:
             csr = f.read()
 
-        # We just want the CSR bits, make sure there is nothing else
-        csr = pkcs10.strip_header(csr)
+        # We just want the CSR bits, make sure there is no thing else
+        csr = strip_csr_header(csr).decode('utf8')
 
         params = {'profileId': dogtag.DEFAULT_PROFILE,
                 'cert_request_type': 'pkcs10',
@@ -448,50 +501,6 @@ class CertDB(object):
             doc.unlink()
 
         # base64-decode the result for uniformity
-        cert = base64.b64decode(cert)
-
-        # Write the certificate to a file. It will be imported in a later
-        # step. This file will be read later to be imported.
-        with open(cert_fname, "wb") as f:
-            f.write(cert)
-
-    def issue_signing_cert(self, certreq_fname, cert_fname):
-        self.setup_cert_request()
-
-        if self.host_name is None:
-            raise RuntimeError("CA Host is not set.")
-
-        with open(certreq_fname, "r") as f:
-            csr = f.read()
-
-        # We just want the CSR bits, make sure there is no thing else
-        csr = pkcs10.strip_header(csr)
-
-        params = {'profileId': 'caJarSigningCert',
-                'cert_request_type': 'pkcs10',
-                'requestor_name': 'IPA Installer',
-                'cert_request': csr,
-                'xmlOutput': 'true'}
-
-        # Send the request to the CA
-        result = dogtag.https_request(
-            self.host_name, 8443,
-            url="/ca/ee/ca/profileSubmitSSLClient",
-            cafile=api.env.tls_ca_cert,
-            client_certfile=paths.RA_AGENT_PEM,
-            client_keyfile=paths.RA_AGENT_KEY,
-            **params)
-        http_status, _http_headers, http_body = result
-        if http_status != 200:
-            raise RuntimeError("Unable to submit cert request")
-
-        # The result is an XML blob. Pull the certificate out of that
-        doc = xml.dom.minidom.parseString(http_body)
-        item_node = doc.getElementsByTagName("b64")
-        cert = item_node[0].childNodes[0].data
-        doc.unlink()
-
-        # base64-decode the cert for uniformity
         cert = base64.b64decode(cert)
 
         # Write the certificate to a file. It will be imported in a later
@@ -557,15 +566,16 @@ class CertDB(object):
         if nickname is None:
             nickname = get_ca_nickname(api.env.realm)
 
-        ipautil.run([paths.PK12UTIL, "-d", self.secdir,
-                     "-o", pkcs12_fname,
-                     "-n", nickname,
-                     "-k", self.passwd_fname,
-                     "-w", pkcs12_pwd_fname])
+        self.nssdb.run_pk12util([
+            "-o", pkcs12_fname,
+            "-n", nickname,
+            "-k", self.passwd_fname,
+            "-w", pkcs12_pwd_fname
+        ])
 
     def create_from_cacert(self):
         cacert_fname = paths.IPA_CA_CRT
-        if ipautil.file_exists(self.certdb_fname):
+        if os.path.isfile(self.certdb_fname):
             # We already have a cert db, see if it is for the same CA.
             # If it is we leave things as they are.
             with open(cacert_fname, "r") as f:
@@ -646,36 +656,52 @@ class CertDB(object):
         return self.nssdb.export_pem_cert(nickname, location)
 
     def request_service_cert(self, nickname, principal, host):
-        certmonger.request_and_wait_for_cert(certpath=self.secdir,
-                                             nickname=nickname,
-                                             principal=principal,
-                                             subject=host,
-                                             passwd_fname=self.passwd_fname)
+        certmonger.request_and_wait_for_cert(
+            certpath=self.secdir,
+            storage='NSSDB',
+            nickname=nickname,
+            principal=principal,
+            subject=host,
+            passwd_fname=self.passwd_fname
+        )
 
     def is_ipa_issued_cert(self, api, nickname):
         """
         Return True if the certificate contained in the CertDB with the
         provided nickname has been issued by IPA.
 
-        Note that this method can only be executed if api has been initialized
+        Note that this method can only be executed if the api has been
+        initialized.
+
+        This method needs to compare the cert issuer (from the NSS DB
+        and the subject from the CA (from LDAP), because nicknames are not
+        always aligned.
+
+        The cert can be issued directly by IPA. In this case, the cert
+        issuer is IPA CA subject.
         """
-        # This method needs to compare the cert issuer (from the NSS DB
-        # and the subject from the CA (from LDAP), because nicknames are not
-        # always aligned.
-
-        cacert_subject = certstore.get_ca_subject(
-            api.Backend.ldap2,
-            api.env.container_ca,
-            api.env.basedn)
-
-        # The cert can be issued directly by IPA. In this case, the cert
-        # issuer is IPA CA subject.
         cert = self.get_cert_from_db(nickname)
         if cert is None:
             raise RuntimeError("Could not find the cert %s in %s"
                                % (nickname, self.secdir))
 
-        return DN(cert.issuer) == cacert_subject
+        return is_ipa_issued_cert(api, cert)
+
+    def needs_upgrade_format(self):
+        """Check if NSSDB file format needs upgrade
+
+        Only upgrade if it's an existing dbm database and default
+        database type is no 'dbm'.
+        """
+        return (
+            self.nssdb.dbtype == 'dbm' and
+            self.exists()
+        )
+
+    def upgrade_format(self):
+        """Upgrade NSSDB to new file format
+        """
+        self.nssdb.convert_db()
 
 
 class _CrossProcessLock(object):

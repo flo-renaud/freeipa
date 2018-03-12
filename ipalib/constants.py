@@ -157,11 +157,6 @@ DEFAULT_CONFIG = (
     ('webui_prod', True),
 
     # Session stuff:
-
-    # Maximum time before a session expires forcing credentials to be reacquired.
-    ('session_auth_duration', '20 minutes'),
-    # How a session expiration is computed, see SessionManager.set_session_expiration_time()
-    ('session_duration_type', 'inactivity_timeout'),
     ('kinit_lifetime', None),
 
     # Debugging:
@@ -287,6 +282,8 @@ IPA_CA_RECORD = "ipa-ca"
 IPA_CA_NICKNAME = 'caSigningCert cert-pki-ca'
 RENEWAL_CA_NAME = 'dogtag-ipa-ca-renew-agent'
 RENEWAL_REUSE_CA_NAME = 'dogtag-ipa-ca-renew-agent-reuse'
+# How long dbus clients should wait for CA certificate RPCs [seconds]
+CA_DBUS_TIMEOUT = 120
 
 # regexp definitions
 PATTERN_GROUPUSER_NAME = '^[a-zA-Z0-9_.][a-zA-Z0-9_.-]*[a-zA-Z0-9_.$-]?$'
@@ -307,9 +304,7 @@ TLS_VERSIONS = [
     "tls1.2"
 ]
 TLS_VERSION_MINIMAL = "tls1.0"
-# high ciphers without RC4, MD5, TripleDES, pre-shared key
-# and secure remote password
-TLS_HIGH_CIPHERS = "HIGH:!aNULL:!eNULL:!MD5:!RC4:!3DES:!PSK:!SRP"
+
 
 # Use cache path
 USER_CACHE_PATH = (

@@ -25,6 +25,7 @@ import logging
 import socket
 import getpass
 import gssapi
+import io
 import ldif
 import os
 import re
@@ -32,6 +33,7 @@ import fileinput
 import sys
 import tempfile
 import shutil
+import stat
 import traceback
 import textwrap
 from contextlib import contextmanager
@@ -436,12 +438,93 @@ def unquote_directive_value(value, quote_char):
     return unescaped_value
 
 
-def set_directive(filename, directive, value, quotes=True, separator=' '):
+_SENTINEL = object()
+
+
+class DirectiveSetter(object):
+    """Safe directive setter
+
+    with DirectiveSetter('/path/to/conf') as ds:
+        ds.set(key, value)
+    """
+    def __init__(self, filename, quotes=True, separator=' ', comment='#'):
+        self.filename = os.path.abspath(filename)
+        self.quotes = quotes
+        self.separator = separator
+        self.comment = comment
+        self.lines = None
+        self.stat = None
+
+    def __enter__(self):
+        with io.open(self.filename) as f:
+            self.stat = os.fstat(f.fileno())
+            self.lines = list(f)
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_type is not None:
+            # something went wrong, reset
+            self.lines = None
+            self.stat = None
+            return
+
+        directory, prefix = os.path.split(self.filename)
+        # use tempfile in same directory to have atomic rename
+        fd, name = tempfile.mkstemp(prefix=prefix, dir=directory, text=True)
+        with io.open(fd, mode='w', closefd=True) as f:
+            for line in self.lines:
+                if not isinstance(line, six.text_type):
+                    line = line.decode('utf-8')
+                f.write(line)
+            self.lines = None
+            os.fchmod(f.fileno(), stat.S_IMODE(self.stat.st_mode))
+            os.fchown(f.fileno(), self.stat.st_uid, self.stat.st_gid)
+            self.stat = None
+            # flush and sync tempfile inode
+            f.flush()
+            os.fsync(f.fileno())
+
+        # rename file and sync directory inode
+        os.rename(name, self.filename)
+        dirfd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(dirfd)
+        finally:
+            os.close(dirfd)
+
+    def set(self, directive, value, quotes=_SENTINEL, separator=_SENTINEL,
+            comment=_SENTINEL):
+        """Set a single directive
+        """
+        if quotes is _SENTINEL:
+            quotes = self.quotes
+        if separator is _SENTINEL:
+            separator = self.separator
+        if comment is _SENTINEL:
+            comment = self.comment
+        # materialize lines
+        # set_directive_lines() modify item, shrink or enlage line count
+        self.lines = list(set_directive_lines(
+            quotes, separator, directive, value, self.lines, comment
+        ))
+
+    def setitems(self, items):
+        """Set multiple directives from a dict or list with key/value pairs
+        """
+        if isinstance(items, dict):
+            # dict-like, use sorted for stable order
+            items = sorted(items.items())
+        for k, v in items:
+            self.set(k, v)
+
+
+def set_directive(filename, directive, value, quotes=True, separator=' ',
+                  comment='#'):
     """Set a name/value pair directive in a configuration file.
 
     A value of None means to drop the directive.
 
-    This has only been tested with nss.conf
+    Does not tolerate (or put) spaces around the separator.
 
     :param filename: input filename
     :param directive: directive name
@@ -450,36 +533,63 @@ def set_directive(filename, directive, value, quotes=True, separator=' '):
         any existing double quotes are first escaped to avoid
         unparseable directives.
     :param separator: character serving as separator between directive and
-        value
+        value.  Correct value required even when dropping a directive.
+    :param comment: comment character for the file to keep new values near
+                    their commented-out counterpart
     """
-
-    new_directive_value = ""
-    if value is not None:
-        value_to_set = quote_directive_value(value, '"') if quotes else value
-
-        new_directive_value = "".join(
-            [directive, separator, value_to_set, '\n'])
-
-    valueset = False
     st = os.stat(filename)
-    fd = open(filename)
-    newfile = []
-    for line in fd:
-        if line.lstrip().startswith(directive):
-            valueset = True
-            if value is not None:
-                newfile.append(new_directive_value)
-        else:
-            newfile.append(line)
-    fd.close()
-    if not valueset:
-        if value is not None:
-            newfile.append(new_directive_value)
+    with open(filename, 'r') as f:
+        lines = list(f)  # read the whole file
+        # materialize new list
+        new_lines = list(set_directive_lines(
+            quotes, separator, directive, value, lines, comment
+        ))
+    with open(filename, 'w') as f:
+        # don't construct the whole string; write line-wise
+        for line in new_lines:
+            f.write(line)
+    os.chown(filename, st.st_uid, st.st_gid)  # reset perms
 
-    fd = open(filename, "w")
-    fd.write("".join(newfile))
-    fd.close()
-    os.chown(filename, st.st_uid, st.st_gid) # reset perms
+
+def set_directive_lines(quotes, separator, k, v, lines, comment):
+    """Set a name/value pair in a configuration (iterable of lines).
+
+    Replaces the value of the key if found, otherwise adds it at
+    end.  If value is ``None``, remove the key if found.
+
+    Takes an iterable of lines (with trailing newline).
+    Yields lines (with trailing newline).
+
+    """
+    new_line = ""
+    if v is not None:
+        v_quoted = quote_directive_value(v, '"') if quotes else v
+        new_line = ''.join([k, separator, v_quoted, '\n'])
+
+    found = False
+    addnext = False  # add on next line, found a comment
+    matcher = re.compile(r'\s*{}'.format(re.escape(k + separator)))
+    cmatcher = re.compile(r'\s*{}\s*{}'.format(comment,
+                                               re.escape(k + separator)))
+    for line in lines:
+        if matcher.match(line):
+            found = True
+            addnext = False
+            if v is not None:
+                yield new_line
+        elif addnext:
+            found = True
+            addnext = False
+            yield new_line
+            yield line
+        elif cmatcher.match(line):
+            addnext = True
+            yield line
+        else:
+            yield line
+
+    if not found and v is not None:
+        yield new_line
 
 
 def get_directive(filename, directive, separator=' '):
@@ -508,22 +618,29 @@ def get_directive(filename, directive, separator=' '):
     fd.close()
     return None
 
+
 def kadmin(command):
-    return ipautil.run(["kadmin.local", "-q", command,
-                        "-x", "ipa-setup-override-restrictions"],
-                       capture_output=True,
-                       capture_error=True)
+    return ipautil.run(
+        [
+            paths.KADMIN_LOCAL, "-q", command,
+            "-x", "ipa-setup-override-restrictions"
+        ],
+        capture_output=True,
+        capture_error=True
+    )
 
 
 def kadmin_addprinc(principal):
     return kadmin("addprinc -randkey " + principal)
 
+
 def kadmin_modprinc(principal, options):
     return kadmin("modprinc " + options + " " + principal)
 
+
 def create_keytab(path, principal):
     try:
-        if ipautil.file_exists(path):
+        if os.path.isfile(path):
             os.remove(path)
     except os.error:
         logger.critical("Failed to remove %s.", path)
@@ -741,7 +858,7 @@ def expand_replica_info(filename, password):
     tarfile = top_dir+"/files.tar"
     dir_path = top_dir + "/realm_info"
     decrypt_file(filename, tarfile, password, top_dir)
-    ipautil.run(["tar", "xf", tarfile, "-C", top_dir])
+    ipautil.run([paths.TAR, "xf", tarfile, "-C", top_dir])
     os.remove(tarfile)
 
     return top_dir, dir_path
@@ -769,7 +886,7 @@ def read_replica_info(dir_path, rconfig):
 def read_replica_info_dogtag_port(config_dir):
     portfile = config_dir + "/dogtag_directory_port.txt"
     default_port = 7389
-    if not ipautil.file_exists(portfile):
+    if not os.path.isfile(portfile):
         dogtag_master_ds_port = default_port
     else:
         with open(portfile) as fd:
@@ -969,7 +1086,7 @@ def handle_error(error, log_file_name=None):
         return error, 1
 
     if isinstance(error, errors.ACIError):
-        return error.message, 1
+        return str(error), 1
     if isinstance(error, ldap.INVALID_CREDENTIALS):
         return "Invalid password", 1
     if isinstance(error, ldap.INSUFFICIENT_ACCESS):
@@ -1193,7 +1310,8 @@ def load_external_cert(files, ca_subject):
 
         if ca_nickname is None:
             raise ScriptError(
-                "IPA CA certificate not found in %s" % (", ".join(files)))
+                "IPA CA certificate with subject '%s' "
+                "was not found in %s." % (ca_subject, (",".join(files))))
 
         trust_chain = list(reversed(nssdb.get_trust_chain(ca_nickname)))
         ca_cert_chain = []

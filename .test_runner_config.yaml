@@ -24,11 +24,12 @@ server:
   realm: IPA.TEST
 steps:
   build:
-  - make V=0 ${make_target}
+  - make V=0 ${make_target} LOG_COMPILE='gdb -return-child-result -ex run -ex "thread apply all bt" -ex "quit" --args'
   builddep:
   - rm -rf /var/cache/dnf/*
   - "dnf makecache || :"
-  - dnf builddep -y ${builddep_opts} --spec freeipa.spec.in --best --allowerasing
+  - dnf builddep -y ${builddep_opts} -D "with_wheels 1" --spec freeipa.spec.in --best --allowerasing
+  - dnf install -y gdb
   cleanup:
   - chown -R ${uid}:${gid} ${container_working_dir}
   - journalctl -b --no-pager > systemd_journal.log
@@ -40,7 +41,9 @@ steps:
       /var/log/krb5kdc.log
       /var/log/pki
       systemd_journal.log
+      `find daemons -name '*.log' -print`
   - chown ${uid}:${gid} ${container_working_dir}/var_log.tar
+  - ls -laZ /etc/dirsrv/slapd-*/ /etc/httpd/alias/ /etc/pki/pki-tomcat/alias/ || true
   configure:
   - ./autogen.sh
   install_packages:
@@ -53,6 +56,14 @@ steps:
   lint:
   - make PYTHON=/usr/bin/python2 V=0 lint
   - make PYTHON=/usr/bin/python3 V=0 pylint
+  webui_unit:
+  - dnf install -y npm
+  - cd ${container_working_dir}/install/ui/js/libs && make
+  - cd ${container_working_dir}/install/ui && npm install
+  - cd ${container_working_dir}/install/ui && node_modules/grunt/bin/grunt --verbose qunit
+  tox:
+  # just run one pylint and one Python 3 target (time/coverage trade-off)
+  - tox -e py27,py36,pypi,pylint3
   prepare_tests:
   - echo ${server_password} | kinit admin && ipa ping
   - cp -r /etc/ipa/* ~/.ipa/
@@ -63,6 +74,8 @@ steps:
   - ipa-test-task --help
   - ipa-run-tests ${tests_ignore} -k-test_dns_soa ${tests_verbose} ${path}
   - '! grep -n -C5 BytesWarning /var/log/httpd/error_log'
+  - ipa-server-install --uninstall -U
+  # second uninstall to verify that --uninstall without installation works
   - ipa-server-install --uninstall -U
 tests:
   ignore:

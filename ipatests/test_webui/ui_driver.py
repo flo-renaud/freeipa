@@ -24,13 +24,12 @@ Contains browser driver and common tasks.
 """
 from __future__ import print_function
 
-import nose
 from datetime import datetime
 import time
 import re
 import os
 from functools import wraps
-from nose.plugins.skip import SkipTest
+import unittest
 
 # pylint: disable=import-error
 from six.moves.urllib.error import URLError
@@ -42,7 +41,6 @@ try:
     from selenium.common.exceptions import InvalidElementStateException
     from selenium.common.exceptions import StaleElementReferenceException
     from selenium.common.exceptions import WebDriverException
-    from selenium.webdriver.common.action_chains import ActionChains
     from selenium.webdriver.common.desired_capabilities import DesiredCapabilities
     from selenium.webdriver.common.keys import Keys
     from selenium.webdriver.common.by import By
@@ -58,6 +56,7 @@ try:
 except ImportError:
     NO_YAML = True
 from ipaplatform.paths import paths
+
 
 ENV_MAP = {
     'MASTER': 'ipa_server',
@@ -98,7 +97,7 @@ def screenshot(fn):
     def screenshot_wrapper(*args):
         try:
             return fn(*args)
-        except SkipTest:
+        except unittest.SkipTest:
             raise
         except Exception:
             self = args[0]
@@ -120,7 +119,7 @@ class UI_driver(object):
     @classmethod
     def setup_class(cls):
         if NO_SELENIUM:
-            raise nose.SkipTest('Selenium not installed')
+            raise unittest.SkipTest('Selenium not installed')
 
     def setup(self, driver=None, config=None):
         self.request_timeout = 30
@@ -150,9 +149,11 @@ class UI_driver(object):
                 with open(path, 'r') as conf:
                     self.config = yaml.load(conf)
             except yaml.YAMLError as e:
-                raise nose.SkipTest("Invalid Web UI config.\n%s" % e)
+                raise unittest.SkipTest("Invalid Web UI config.\n%s" % e)
             except IOError as e:
-                raise nose.SkipTest("Can't load Web UI test config: %s" % e)
+                raise unittest.SkipTest(
+                    "Can't load Web UI test config: %s" % e
+                )
         else:
             self.config = {}
 
@@ -188,7 +189,7 @@ class UI_driver(object):
 
         if driver_type == 'remote':
             if 'host' not in self.config:
-                raise nose.SkipTest('Selenium server host not configured')
+                raise unittest.SkipTest('Selenium server host not configured')
             host = self.config["host"]
 
             if browser == 'chrome':
@@ -204,9 +205,13 @@ class UI_driver(object):
                     command_executor='http://%s:%d/wd/hub' % (host, port),
                     desired_capabilities=capabilities)
             except URLError as e:
-                raise nose.SkipTest('Error connecting to selenium server: %s' % e)
+                raise unittest.SkipTest(
+                    'Error connecting to selenium server: %s' % e
+                )
             except RuntimeError as e:
-                raise nose.SkipTest('Error while establishing webdriver: %s' % e)
+                raise unittest.SkipTest(
+                    'Error while establishing webdriver: %s' % e
+                )
         else:
             try:
                 if browser == 'chrome' or browser == 'chromium':
@@ -217,11 +222,16 @@ class UI_driver(object):
                     fp = None
                     if "ff_profile" in self.config:
                         fp = webdriver.FirefoxProfile(self.config["ff_profile"])
-                    driver = webdriver.Firefox(fp)
+                    ff_log_path = self.config.get("geckodriver_log_path")
+                    driver = webdriver.Firefox(fp, log_path=ff_log_path)
             except URLError as e:
-                raise nose.SkipTest('Error connecting to selenium server: %s' % e)
+                raise unittest.SkipTest(
+                    'Error connecting to selenium server: %s' % e
+                )
             except RuntimeError as e:
-                raise nose.SkipTest('Error while establishing webdriver: %s' % e)
+                raise unittest.SkipTest(
+                    'Error while establishing webdriver: %s' % e
+                )
 
         return driver
 
@@ -343,34 +353,56 @@ class UI_driver(object):
         """
         Navigate to Web UI first page and wait for loading of all dependencies.
         """
+        # If the application is already loaded, there is no need to re-enter
+        # the URL on the address bar and reloading everything.
+        # This help us to create scenarios like login -> logout -> login
+
+        # if a page is already loaded we click in the IPA logo to go to the
+        # initial page
+        ipa_logo = self.find('.navbar-brand', By.CSS_SELECTOR)
+        if ipa_logo and ipa_logo.is_displayed():
+            self.move_to_element_in_page(ipa_logo)
+            ipa_logo.click()
+            return
+
+        # already on the first page
+        if self.login_screen_visible():
+            return
+
+        # if is not any of above cases, we need to load the application for
+        # its first time entering the URL in the address bar
         self.driver.get(self.get_base_url())
         runner = self
         WebDriverWait(self.driver, 10).until(lambda d: runner.files_loaded())
+        self.wait_for_request()
 
     def login(self, login=None, password=None, new_password=None):
         """
         Log in if user is not logged in.
         """
+        if self.logged_in():
+            return
+
+        if not login:
+            login = self.config['ipa_admin']
+        if not password:
+            password = self.config['ipa_password']
+        if not new_password:
+            new_password = password
+
+        auth = self.get_login_screen()
+        login_tb = self.find("//input[@type='text'][@name='username']",
+                             'xpath', auth, strict=True)
+        psw_tb = self.find("//input[@type='password'][@name='password']",
+                           'xpath', auth, strict=True)
+        login_tb.send_keys(login)
+        psw_tb.send_keys(password)
+        psw_tb.send_keys(Keys.RETURN)
+        self.wait(0.5)
         self.wait_for_request(n=2)
-        if not self.logged_in():
 
-            if not login:
-                login = self.config['ipa_admin']
-            if not password:
-                password = self.config['ipa_password']
-            if not new_password:
-                new_password = password
-
-            auth = self.get_login_screen()
-            login_tb = self.find("//input[@type='text'][@name='username']", 'xpath', auth, strict=True)
-            psw_tb = self.find("//input[@type='password'][@name='password']", 'xpath', auth, strict=True)
-            login_tb.send_keys(login)
-            psw_tb.send_keys(password)
-            psw_tb.send_keys(Keys.RETURN)
-            self.wait(0.5)
-            self.wait_for_request(n=2)
-
-            # reset password if needed
+        # reset password if needed
+        if self.login_screen_visible():
             newpw_tb = self.find("//input[@type='password'][@name='new_password']", 'xpath', auth)
             verify_tb = self.find("//input[@type='password'][@name='verify_password']", 'xpath', auth)
             if newpw_tb and newpw_tb.is_displayed():
@@ -391,12 +423,13 @@ class UI_driver(object):
 
     def logout(self):
         self.profile_menu_action('logout')
+        assert self.login_screen_visible()
 
     def get_login_screen(self):
         """
         Get reference of login screen
         """
-        return self.find('rcue-login-screen', 'id')
+        return self.find('.login-pf', By.CSS_SELECTOR)
 
     def login_screen_visible(self):
         """
@@ -652,12 +685,18 @@ class UI_driver(object):
 
     def _button_click(self, selector, parent, name=''):
         btn = self.find(selector, By.CSS_SELECTOR, parent, strict=True)
-        ActionChains(self.driver).move_to_element(btn).perform()
+        self.move_to_element_in_page(btn)
         disabled = btn.get_attribute("disabled")
         assert btn.is_displayed(), 'Button is not displayed: %s' % name
         assert not disabled, 'Invalid button state: disabled. Button: %s' % name
         btn.click()
         self.wait_for_request()
+
+    def move_to_element_in_page(self, element):
+        # workaround to move the page until the element is visible
+        # more in https://github.com/mozilla/geckodriver/issues/776
+        self.driver.execute_script('arguments[0].scrollIntoView(true);',
+                                   element)
 
     def profile_menu_action(self, name):
         """
@@ -671,6 +710,21 @@ class UI_driver(object):
         # action is usually followed by opening a dialog, add wait to compensate
         # possible dialog transition effect
         self.wait(0.5)
+
+    def close_notifications(self):
+        """
+        Close all notifications like success messages, warnings, infos
+        """
+        self.wait()
+        while True:
+            # get close button of notification
+            s = ".notification-area .alert button"
+            button = self.find(s, By.CSS_SELECTOR, strict=False)
+            if button:
+                button.click()
+                self.wait()
+            else:
+                break
 
     def get_form(self):
         """
@@ -824,6 +878,7 @@ class UI_driver(object):
         if combobox_input:
             if not option:
                 self.fill_textbox(combobox_input, value, cb)
+                open_btn.click()
         else:
             if not option:
                 # try to search
@@ -964,7 +1019,8 @@ class UI_driver(object):
         input_s = s + " tbody td input[value='%s']" % pkey
         checkbox = self.find(input_s, By.CSS_SELECTOR, parent, strict=True)
         try:
-            ActionChains(self.driver).move_to_element(checkbox).click().perform()
+            self.move_to_element_in_page(checkbox)
+            checkbox.click()
         except WebDriverException as e:
             assert False, 'Can\'t click on checkbox label: %s \n%s' % (s, e)
         self.wait()
@@ -1277,6 +1333,7 @@ class UI_driver(object):
                    update_btn='save',
                    breadcrumb=None,
                    navigate=True,
+                   mod=True,
                    delete=True):
         """
         Basic CRUD operation sequence.
@@ -1327,7 +1384,7 @@ class UI_driver(object):
         self.validate_fields(data.get('add_v'))
 
         # 4. Mod values
-        if data.get('mod'):
+        if mod and data.get('mod'):
             self.mod_record(entity, data, details_facet, update_btn)
             self.validate_fields(data.get('mod_v'))
 
@@ -1568,7 +1625,7 @@ class UI_driver(object):
         """
         Skip tests
         """
-        raise nose.SkipTest(reason)
+        raise unittest.SkipTest(reason)
 
     def assert_text(self, selector, value, parent=None):
         """

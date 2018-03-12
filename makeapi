@@ -1,4 +1,4 @@
-#!/usr/bin/python2
+#!/usr/bin/python3
 # Authors:
 #   Rob Crittenden <rcritten@redhat.com>
 #   John Dennis <jdennis@redhat.com>
@@ -32,8 +32,6 @@ import os
 import re
 import inspect
 import operator
-
-import ignore_import_errors     # pylint: disable=unused-import
 
 from ipalib import api
 from ipalib.parameters import Param

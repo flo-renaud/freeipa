@@ -35,6 +35,10 @@ import dns
 import encodings
 import sys
 import ssl
+import termios
+import fcntl
+import struct
+import subprocess
 
 import netaddr
 from dns import resolver, rdatatype
@@ -52,21 +56,27 @@ except ImportError:
 from ipalib import errors, messages
 from ipalib.constants import (
     DOMAIN_LEVEL_0,
-    TLS_VERSIONS, TLS_VERSION_MINIMAL, TLS_HIGH_CIPHERS
+    TLS_VERSIONS, TLS_VERSION_MINIMAL
 )
 from ipalib.text import _
-# pylint: disable=ipa-forbidden-import
-from ipalib.install import sysrestore
+from ipaplatform.constants import constants
 from ipaplatform.paths import paths
-# pylint: enable=ipa-forbidden-import
 from ipapython.ssh import SSHPublicKey
 from ipapython.dn import DN, RDN
 from ipapython.dnsutil import DNSName
 from ipapython.dnsutil import resolve_ip_addresses
 from ipapython.admintool import ScriptError
 
+if sys.version_info >= (3, 2):
+    import reprlib  # pylint: disable=import-error
+else:
+    reprlib = None
+
 if six.PY3:
     unicode = str
+
+_IPA_CLIENT_SYSRESTORE = "/var/lib/ipa-client/sysrestore"
+_IPA_DEFAULT_CONF = "/etc/ipa/default.conf"
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +163,23 @@ def isvalid_base64(data):
         return False
     else:
         return True
+
+
+def strip_csr_header(csr):
+    """
+    Remove the header and footer (and surrounding material) from a CSR.
+    """
+    headerlen = 40
+    s = csr.find(b"-----BEGIN NEW CERTIFICATE REQUEST-----")
+    if s == -1:
+        headerlen = 36
+        s = csr.find(b"-----BEGIN CERTIFICATE REQUEST-----")
+    if s >= 0:
+        e = csr.find(b"-----END")
+        csr = csr[s + headerlen:e]
+
+    return csr
+
 
 def validate_ipaddr(ipaddr):
     """
@@ -292,6 +319,10 @@ def create_https_connection(
         raise RuntimeError("cafile argument is required to perform server "
                            "certificate verification")
 
+    if not os.path.isfile(cafile) or not os.access(cafile, os.R_OK):
+        raise RuntimeError("cafile \'{file}\' doesn't exist or is unreadable".
+                           format(file=cafile))
+
     # remove the slice of negating protocol options according to options
     tls_span = get_proper_tls_version_span(tls_version_min, tls_version_max)
 
@@ -305,9 +336,9 @@ def create_https_connection(
         ssl.OP_SINGLE_ECDH_USE
     )
 
-    # high ciphers without RC4, MD5, TripleDES, pre-shared key
-    # and secure remote password
-    ctx.set_ciphers(TLS_HIGH_CIPHERS)
+    # high ciphers without RC4, MD5, TripleDES, pre-shared key and secure
+    # remote password. Uses system crypto policies on some platforms.
+    ctx.set_ciphers(constants.TLS_HIGH_CIPHERS)
 
     # pylint: enable=no-member
     # set up the correct TLS version flags for the SSL context
@@ -372,11 +403,18 @@ def validate_dns_label(dns_label, allow_underscore=False, allow_slash=False):
                            % dict(chars=chars, chars2=chars2))
 
 
-def validate_domain_name(domain_name, allow_underscore=False, allow_slash=False):
+def validate_domain_name(
+    domain_name, allow_underscore=False,
+    allow_slash=False, entity='domain'
+):
     if domain_name.endswith('.'):
         domain_name = domain_name[:-1]
 
     domain_name = domain_name.split(".")
+
+    if len(domain_name) < 2:
+        raise ValueError(_(
+            'single label {}s are not supported'.format(entity)))
 
     # apply DNS name validator to every name part
     for label in domain_name:
@@ -420,11 +458,15 @@ def validate_hostname(hostname, check_fqdn=True, allow_underscore=False, allow_s
 def normalize_sshpubkey(value):
     return SSHPublicKey(value).openssh()
 
+
 def validate_sshpubkey(ugettext, value):
     try:
         SSHPublicKey(value)
     except (ValueError, UnicodeDecodeError):
         return _('invalid SSH public key')
+    else:
+        return None
+
 
 def validate_sshpubkey_no_options(ugettext, value):
     try:
@@ -434,6 +476,8 @@ def validate_sshpubkey_no_options(ugettext, value):
 
     if pubkey.has_options():
         return _('options are not allowed')
+    else:
+        return None
 
 
 def convert_sshpubkey_post(entry_attrs):
@@ -653,18 +697,23 @@ def get_reverse_zone_default(ip_address):
 
     return normalize_zone('.'.join(items))
 
+
 def validate_rdn_param(ugettext, value):
     try:
         RDN(value)
     except Exception as e:
         return str(e)
-    return None
+    else:
+        return None
+
 
 def validate_hostmask(ugettext, hostmask):
     try:
         netaddr.IPNetwork(hostmask)
     except (ValueError, AddrFormatError):
         return _('invalid hostmask')
+    else:
+        return None
 
 
 class ForwarderValidationError(Exception):
@@ -1078,8 +1127,9 @@ def check_client_configuration():
     """
     Check if IPA client is configured on the system.
     """
-    fstore = sysrestore.FileStore(paths.IPA_CLIENT_SYSRESTORE)
-    if not fstore.has_files() and not os.path.exists(paths.IPA_DEFAULT_CONF):
+    if (not os.path.isfile(paths.IPA_DEFAULT_CONF) or
+            not os.path.isdir(paths.IPA_CLIENT_SYSRESTORE) or
+            not os.listdir(paths.IPA_CLIENT_SYSRESTORE)):
         raise ScriptError('IPA client is not configured on this system')
 
 
@@ -1132,3 +1182,73 @@ def no_matching_interface_for_ip_address_warning(addr_list):
                 "{}".format(ip),
                 file=sys.stderr
             )
+
+
+def get_terminal_height(fd=1):
+    """
+    Get current terminal height
+
+    Args:
+        fd (int): file descriptor. Default: 1 (stdout)
+
+    Returns:
+        int: Terminal height
+    """
+    try:
+        return struct.unpack(
+            'hh', fcntl.ioctl(fd, termios.TIOCGWINSZ, b'1234'))[0]
+    except (IOError, OSError, struct.error):
+        return os.environ.get("LINES", 25)
+
+
+def open_in_pager(data):
+    """
+    Open text data in pager
+
+    Args:
+        data (bytes): data to view in pager
+
+    Returns:
+        None
+    """
+    pager = os.environ.get("PAGER", "less")
+    pager_process = subprocess.Popen([pager], stdin=subprocess.PIPE)
+
+    try:
+        pager_process.stdin.write(data)
+        pager_process.communicate()
+    except IOError:
+        pass
+
+
+if reprlib is not None:
+    class APIRepr(reprlib.Repr):
+        builtin_types = {
+            bool, int, float,
+            str, bytes,
+            dict, tuple, list, set, frozenset,
+            type(None),
+        }
+
+        def __init__(self):
+            super(APIRepr, self).__init__()
+            # no limitation
+            for k, v in self.__dict__.items():
+                if isinstance(v, int):
+                    setattr(self, k, sys.maxsize)
+
+        def repr_str(self, x, level):
+            """Output with u'' prefix"""
+            return 'u' + repr(x)
+
+        def repr_type(self, x, level):
+            if x is str:
+                return "<type 'unicode'>"
+            if x in self.builtin_types:
+                return "<type '{}'>".format(x.__name__)
+            else:
+                return repr(x)
+
+    apirepr = APIRepr().repr
+else:
+    apirepr = repr

@@ -15,10 +15,11 @@ import textwrap
 
 import six
 
+from ipaclient.install.ipachangeconf import IPAChangeConf
 from ipalib.install import certmonger, sysrestore
 from ipapython import ipautil
 from ipapython.ipautil import (
-    format_netloc, ipa_generate_password, run, user_input)
+    ipa_generate_password, run, user_input)
 from ipapython.admintool import ScriptError
 from ipaplatform import services
 from ipaplatform.paths import paths
@@ -100,7 +101,7 @@ def read_cache(dm_password):
     """
     Returns a dict of cached answers or empty dict if no cache file exists.
     """
-    if not ipautil.file_exists(paths.ROOT_IPA_CACHE):
+    if not os.path.isfile(paths.ROOT_IPA_CACHE):
         return {}
 
     top_dir = tempfile.mkdtemp("ipa")
@@ -305,6 +306,8 @@ def install_check(installer):
     external_cert_file = installer._external_cert_file
     external_ca_file = installer._external_ca_file
     http_ca_cert = installer._ca_cert
+    dirsrv_ca_cert = None
+    pkinit_ca_cert = None
 
     tasks.check_ipv6_stack_enabled()
     tasks.check_selinux_status()
@@ -340,7 +343,7 @@ def install_check(installer):
     sstore = sysrestore.StateFile(SYSRESTORE_DIR_PATH)
 
     # This will override any settings passed in on the cmdline
-    if ipautil.file_exists(paths.ROOT_IPA_CACHE):
+    if os.path.isfile(paths.ROOT_IPA_CACHE):
         if options.dm_password is not None:
             dm_password = options.dm_password
         else:
@@ -418,10 +421,6 @@ def install_check(installer):
         except ipaclient.install.ntpconf.NTPConfigurationError:
             pass
 
-    # Check to see if httpd is already configured to listen on 443
-    if httpinstance.httpd_443_configured():
-        raise ScriptError("Aborting installation")
-
     if not options.setup_dns and installer.interactive:
         if ipautil.user_input("Do you want to configure integrated DNS "
                               "(BIND)?", False):
@@ -471,6 +470,11 @@ def install_check(installer):
     if not options.realm_name:
         realm_name = read_realm_name(domain_name, not installer.interactive)
         logger.debug("read realm_name: %s\n", realm_name)
+
+        try:
+            validate_domain_name(realm_name, entity="realm")
+        except ValueError as e:
+            raise ScriptError("Invalid realm name: {}".format(unicode(e)))
     else:
         realm_name = options.realm_name.upper()
 
@@ -577,24 +581,44 @@ def install_check(installer):
 
     # Create the management framework config file and finalize api
     target_fname = paths.IPA_DEFAULT_CONF
-    fd = open(target_fname, "w")
-    fd.write("[global]\n")
-    fd.write("host=%s\n" % host_name)
-    fd.write("basedn=%s\n" % ipautil.realm_to_suffix(realm_name))
-    fd.write("realm=%s\n" % realm_name)
-    fd.write("domain=%s\n" % domain_name)
-    fd.write("xmlrpc_uri=https://%s/ipa/xml\n" % format_netloc(host_name))
-    fd.write("ldap_uri=ldapi://%%2fvar%%2frun%%2fslapd-%s.socket\n" %
-             installutils.realm_to_serverid(realm_name))
+    ipaconf = IPAChangeConf("IPA Server Install")
+    ipaconf.setOptionAssignment(" = ")
+    ipaconf.setSectionNameDelimiters(("[", "]"))
+
+    xmlrpc_uri = 'https://{0}/ipa/xml'.format(
+                    ipautil.format_netloc(host_name))
+    ldapi_uri = 'ldapi://%2fvar%2frun%2fslapd-{0}.socket\n'.format(
+                    installutils.realm_to_serverid(realm_name))
+
+    # [global] section
+    gopts = [
+        ipaconf.setOption('host', host_name),
+        ipaconf.setOption('basedn', ipautil.realm_to_suffix(realm_name)),
+        ipaconf.setOption('realm', realm_name),
+        ipaconf.setOption('domain', domain_name),
+        ipaconf.setOption('xmlrpc_uri', xmlrpc_uri),
+        ipaconf.setOption('ldap_uri', ldapi_uri),
+        ipaconf.setOption('mode', 'production')
+    ]
+
     if setup_ca:
-        fd.write("enable_ra=True\n")
-        fd.write("ra_plugin=dogtag\n")
-        fd.write("dogtag_version=10\n")
+        gopts.extend([
+            ipaconf.setOption('enable_ra', 'True'),
+            ipaconf.setOption('ra_plugin', 'dogtag'),
+            ipaconf.setOption('dogtag_version', '10')
+        ])
     else:
-        fd.write("enable_ra=False\n")
-        fd.write("ra_plugin=none\n")
-    fd.write("mode=production\n")
-    fd.close()
+        gopts.extend([
+            ipaconf.setOption('enable_ra', 'False'),
+            ipaconf.setOption('ra_plugin', 'None')
+        ])
+
+    opts = [
+        ipaconf.setSection('global', gopts),
+        {'name': 'empty', 'type': 'empty'}
+    ]
+
+    ipaconf.newConf(target_fname, opts)
 
     # Must be readable for everyone
     os.chmod(target_fname, 0o644)
@@ -641,6 +665,10 @@ def install_check(installer):
     print("Domain name:    %s" % domain_name)
     print("Realm name:     %s" % realm_name)
     print()
+
+    if setup_ca:
+        ca.print_ca_configuration(options)
+        print()
 
     if options.setup_dns:
         print("BIND DNS server will be configured to serve IPA domain with:")
@@ -942,12 +970,8 @@ def install(installer):
         print("These files are required to create replicas. The password for "
               "these")
         print("files is the Directory Manager password")
-    else:
-        print("In order for Firefox autoconfiguration to work you will need to")
-        print("use a SSL signing certificate. See the IPA documentation for "
-              "more details.")
 
-    if ipautil.file_exists(paths.ROOT_IPA_CACHE):
+    if os.path.isfile(paths.ROOT_IPA_CACHE):
         os.remove(paths.ROOT_IPA_CACHE)
 
 

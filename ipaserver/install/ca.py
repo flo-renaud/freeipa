@@ -99,6 +99,20 @@ def set_subject_base_in_config(subject_base):
         pass
 
 
+def print_ca_configuration(options):
+    """Print info about how the CA will be configured.
+
+    Does not print trailing empty line.
+
+    """
+    print("The CA will be configured with:")
+    print("Subject DN:   {}".format(options.ca_subject))
+    print("Subject base: {}".format(options.subject_base))
+    print("Chaining:     {}".format(
+        "externally signed (two-step installation)" if options.external_ca
+        else "self-signed"))
+
+
 def install_check(standalone, replica_config, options):
     global external_cert_file
     global external_ca_file
@@ -126,7 +140,7 @@ def install_check(standalone, replica_config, options):
             raise ScriptError('A selfsign CA can not be added')
 
         cafile = os.path.join(replica_config.dir, 'cacert.p12')
-        if not options.promote and not ipautil.file_exists(cafile):
+        if not options.promote and not os.path.isfile(cafile):
             raise ScriptError('CA cannot be installed in CA-less setup.')
 
         if standalone and not options.skip_conncheck:
@@ -168,7 +182,7 @@ def install_check(standalone, replica_config, options):
             raise ScriptError(
                 "CA is already installed.\nRun the installer with "
                 "--external-cert-file.")
-        if ipautil.file_exists(paths.ROOT_IPA_CSR):
+        if os.path.isfile(paths.ROOT_IPA_CSR):
             raise ScriptError(
                 "CA CSR file %s already exists.\nIn order to continue "
                 "remove the file and run the installer again." %
@@ -203,6 +217,7 @@ def install_check(standalone, replica_config, options):
         dsdb = certs.CertDB(
             realm_name, nssdir=dirname, subject_base=options._subject_base)
 
+        # Check that we can add our CA cert to DS and PKI NSS databases
         for db in (cadb, dsdb):
             if not db.exists():
                 continue
@@ -322,7 +337,7 @@ def install_step_1(standalone, replica_config, options):
     ca.stop('pki-tomcat')
 
     # This is done within stopped_service context, which restarts CA
-    ca.enable_client_auth_to_db(paths.CA_CS_CFG_PATH)
+    ca.enable_client_auth_to_db()
 
     # Lightweight CA key retrieval is configured in step 1 instead
     # of CAInstance.configure_instance (which is invoked from step

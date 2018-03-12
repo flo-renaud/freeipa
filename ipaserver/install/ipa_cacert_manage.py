@@ -24,7 +24,7 @@ import os
 from optparse import OptionGroup  # pylint: disable=deprecated-module
 import gssapi
 
-from ipalib.constants import RENEWAL_CA_NAME, RENEWAL_REUSE_CA_NAME
+from ipalib.constants import RENEWAL_CA_NAME, RENEWAL_REUSE_CA_NAME, IPA_CA_CN
 from ipalib.install import certmonger, certstore
 from ipapython import admintool, ipautil
 from ipapython.certdb import (EMPTY_TRUST_FLAGS,
@@ -123,13 +123,11 @@ class CACertManage(admintool.AdminTool):
 
         try:
             if command == 'renew':
-                rc = self.renew()
+                return self.renew()
             elif command == 'install':
-                rc = self.install()
+                return self.install()
         finally:
             api.Backend.ldap2.disconnect()
-
-        return rc
 
     def ldap_connect(self):
         password = self.options.password
@@ -207,6 +205,10 @@ class CACertManage(admintool.AdminTool):
             raise admintool.ScriptError("CA renewal master not found")
 
         self.resubmit_request()
+
+        db = certs.CertDB(api.env.realm, nssdir=paths.PKI_TOMCAT_ALIAS_DIR)
+        cert = db.get_cert_from_db(self.cert_nickname)
+        update_ipa_ca_entry(api, cert)
 
         print("CA certificate successfully renewed")
 
@@ -329,6 +331,8 @@ class CACertManage(admintool.AdminTool):
         except errors.EmptyModlist:
             pass
 
+        update_ipa_ca_entry(api, new_cert)
+
         try:
             ca.set_renewal_master()
         except errors.NotFound:
@@ -431,3 +435,21 @@ class CACertManage(admintool.AdminTool):
                 "Failed to install the certificate: %s" % e)
 
         print("CA certificate successfully installed")
+
+
+def update_ipa_ca_entry(api, cert):
+    """
+    The Issuer DN of the IPA CA may have changed.  Update the IPA CA entry.
+
+    :param api: finalised API object, with *connected* LDAP backend
+    :param cert: a python-cryptography Certificate object
+
+    """
+    try:
+        entry = api.Backend.ldap2.get_entry(
+            DN(('cn', IPA_CA_CN), api.env.container_ca, api.env.basedn),
+            ['ipacaissuerdn'])
+        entry['ipacaissuerdn'] = [DN(cert.issuer)]
+        api.Backend.ldap2.update_entry(entry)
+    except errors.EmptyModlist:
+        pass

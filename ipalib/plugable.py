@@ -485,6 +485,11 @@ class API(ReadOnly):
         handler.setFormatter(ipa_log_manager.Formatter(LOGGING_FORMAT_STDERR))
         root_logger.addHandler(handler)
 
+        # check after logging is set up but before we create files.
+        fse = sys.getfilesystemencoding()
+        if fse.lower() not in {'utf-8', 'utf8'}:
+            raise errors.SystemEncodingError(encoding=fse)
+
         # Add file handler:
         if self.env.mode in ('dummy', 'unit_test'):
             return  # But not if in unit-test mode
@@ -515,7 +520,7 @@ class API(ReadOnly):
         Add global options to an optparse.OptionParser instance.
         """
         def config_file_callback(option, opt, value, parser):
-            if not ipautil.file_exists(value):
+            if not os.path.isfile(value):
                 parser.error(
                     _("%(filename)s: file not found") % dict(filename=value))
 
@@ -527,15 +532,15 @@ class API(ReadOnly):
                 formatter=IPAHelpFormatter(),
                 usage='%prog [global-options] COMMAND [command-options]',
                 description='Manage an IPA domain',
-                version=('VERSION: %s, API_VERSION: %s'
-                                % (VERSION, API_VERSION)),
+                version=('VERSION: %s, API_VERSION: %s' %
+                            (VERSION, API_VERSION)),
                 epilog='\n'.join([
                     'See "ipa help topics" for available help topics.',
-                    'See "ipa help <TOPIC>" for more information on a '
-                        'specific topic.',
+                    'See "ipa help <TOPIC>" for more information on '
+                    + 'a specific topic.',
                     'See "ipa help commands" for the full list of commands.',
-                    'See "ipa <COMMAND> --help" for more information on a '
-                        'specific command.',
+                    'See "ipa <COMMAND> --help" for more information on '
+                    + 'a specific command.',
                 ]))
             parser.disable_interspersed_args()
             parser.add_option("-h", "--help", action="help",

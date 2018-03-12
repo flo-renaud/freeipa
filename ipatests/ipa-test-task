@@ -1,4 +1,4 @@
-#! /usr/bin/python2
+#!/usr/bin/python3
 
 # Authors:
 #   Petr Viktorin <pviktori@redhat.com>
@@ -453,4 +453,4 @@ class TaskRunner(object):
         tasks.add_a_record(master, host)
 
 if __name__ == '__main__':
-    exit(TaskRunner().main(sys.argv[1:]))
+    sys.exit(TaskRunner().main(sys.argv[1:]))

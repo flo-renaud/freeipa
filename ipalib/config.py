@@ -28,6 +28,7 @@ of the process.
 
 For the per-request thread-local information, see `ipalib.request`.
 """
+from __future__ import absolute_import
 
 import os
 from os import path
@@ -39,6 +40,7 @@ from six.moves.urllib.parse import urlparse, urlunparse
 from six.moves.configparser import RawConfigParser, ParsingError
 # pylint: enable=import-error
 
+from ipaplatform.tasks import tasks
 from ipapython.dn import DN
 from ipalib.base import check_name
 from ipalib.constants import (
@@ -47,12 +49,6 @@ from ipalib.constants import (
     TLS_VERSIONS
 )
 from ipalib import errors
-try:
-    # pylint: disable=ipa-forbidden-import
-    from ipaplatform.tasks import tasks
-    # pylint: enable=ipa-forbidden-import
-except ImportError:
-    tasks = None
 
 if six.PY3:
     unicode = str
@@ -372,17 +368,17 @@ class Env(object):
         :param config_file: Path of the configuration file to load.
         """
         if not path.isfile(config_file):
-            return
+            return None
         parser = RawConfigParser()
         try:
             parser.read(config_file)
         except ParsingError:
-            return
+            return None
         if not parser.has_section(CONFIG_SECTION):
             parser.add_section(CONFIG_SECTION)
         items = parser.items(CONFIG_SECTION)
         if len(items) == 0:
-            return (0, 0)
+            return 0, 0
         i = 0
         for (key, value) in items:
             if key not in self:
@@ -390,7 +386,7 @@ class Env(object):
                 i += 1
         if 'config_loaded' not in self: # we loaded at least 1 file
             self['config_loaded'] = True
-        return (i, len(items))
+        return i, len(items)
 
     def _join(self, key, *parts):
         """
@@ -405,6 +401,8 @@ class Env(object):
         """
         if key in self and self[key] is not None:
             return path.join(self[key], *parts)
+        else:
+            return None
 
     def __doing(self, name):
         if name in self.__done:
@@ -451,10 +449,7 @@ class Env(object):
         self.script = path.abspath(sys.argv[0])
         self.bin = path.dirname(self.script)
         self.home = os.environ.get('HOME', None)
-
-        # Set fips_mode only if ipaplatform module was loaded
-        if tasks is not None:
-            self.fips_mode = tasks.is_fips_enabled()
+        self.fips_mode = tasks.is_fips_enabled()
 
         # Merge in overrides:
         self._merge(**overrides)
@@ -580,6 +575,16 @@ class Env(object):
         # Set log file:
         if 'log' not in self:
             self.log = self._join('logdir', '%s.log' % self.context)
+
+        # Workaround for ipa-server-install --uninstall. When no config file
+        # is available, we set realm, domain, and basedn to RFC 2606 reserved
+        # suffix to suppress attribute errors during uninstallation.
+        if (self.in_server and self.context == 'installer' and
+                not getattr(self, 'config_loaded', False)):
+            if 'realm' not in self:
+                self.realm = 'UNCONFIGURED.INVALID'
+            if 'domain' not in self:
+                self.domain = self.realm.lower()
 
         if 'basedn' not in self and 'domain' in self:
             self.basedn = DN(*(('dc', dc) for dc in self.domain.split('.')))

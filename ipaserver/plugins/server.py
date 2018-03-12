@@ -227,7 +227,7 @@ class server_mod(LDAPUpdate):
 
         if entry_attrs.get('ipalocation'):
             if not ldap.entry_exists(entry_attrs['ipalocation'][0]):
-                self.api.Object.location.handle_not_found(
+                raise self.api.Object.location.handle_not_found(
                     options['ipalocation_location'])
 
         if 'ipalocation' in entry_attrs or 'ipaserviceweight' in entry_attrs:
@@ -659,10 +659,26 @@ class server_del(LDAPDelete):
         delete server kerberos key and all its svc principals
         """
         try:
+            # do not delete ldap principal if server-del command
+            # has been called on a machine which is being deleted
+            # since this will break replication.
+            # ldap principal to be cleaned later by topology plugin
+            # necessary changes to a topology plugin are tracked
+            # under https://pagure.io/freeipa/issue/7359
+            if master == self.api.env.host:
+                filter = (
+                    '(&(krbprincipalname=*/{}@{})'
+                    '(!(krbprincipalname=ldap/*)))'
+                    .format(master, self.api.env.realm)
+                )
+            else:
+                filter = '(krbprincipalname=*/{}@{})'.format(
+                    master, self.api.env.realm
+                )
+
             entries = ldap.get_entries(
-                self.api.env.basedn, ldap.SCOPE_SUBTREE,
-                filter='(krbprincipalname=*/{}@{})'.format(
-                    master, self.api.env.realm))
+                self.api.env.basedn, ldap.SCOPE_SUBTREE, filter=filter
+            )
 
             if entries:
                 entries.sort(key=lambda x: len(x.dn), reverse=True)
@@ -893,7 +909,7 @@ class server_conncheck(crud.PKQuery):
         try:
             self.obj.get_dn_if_exists(*keys[:-1])
         except errors.NotFound:
-            self.obj.handle_not_found(keys[-2])
+            raise self.obj.handle_not_found(keys[-2])
 
         # the user must have the Replication Administrators privilege
         privilege = u'Replication Administrators'

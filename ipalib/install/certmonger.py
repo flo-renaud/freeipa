@@ -32,6 +32,7 @@ import shlex
 import subprocess
 import tempfile
 from ipalib import api
+from ipalib.constants import CA_DBUS_TIMEOUT
 from ipapython.dn import DN
 from ipaplatform.paths import paths
 from ipaplatform import services
@@ -620,7 +621,9 @@ def modify_ca_helper(ca_name, helper):
         old_helper = ca_iface.Get('org.fedorahosted.certmonger.ca',
                                   'external-helper')
         ca_iface.Set('org.fedorahosted.certmonger.ca',
-                     'external-helper', helper)
+                     'external-helper', helper,
+                     # Give dogtag extra time to generate cert
+                     timeout=CA_DBUS_TIMEOUT)
         return old_helper
 
 
@@ -667,11 +670,3 @@ def wait_for_request(request_id, timeout=120):
         raise RuntimeError("request timed out")
 
     return state
-
-if __name__ == '__main__':
-    request_id = request_cert(paths.HTTPD_ALIAS_DIR,
-                              "cn=tiger.example.com,O=IPA",
-                              "HTTP/tiger.example.com@EXAMPLE.COM", "Test")
-    csr = get_request_value(request_id, 'csr')
-    print(csr)
-    stop_tracking(request_id)

@@ -197,6 +197,10 @@ def xml_wrap(value, version):
         return base64.b64encode(
             value.public_bytes(x509_Encoding.DER)).decode('ascii')
 
+    if isinstance(value, crypto_x509.CertificateSigningRequest):
+        return base64.b64encode(
+            value.public_bytes(x509_Encoding.DER)).decode('ascii')
+
     assert type(value) in (unicode, float, bool, type(None)) + six.integer_types
     return value
 
@@ -219,25 +223,29 @@ def xml_unwrap(value, encoding='UTF-8'):
     :param value: The value to unwrap.
     :param encoding: The Unicode encoding to use (defaults to ``'UTF-8'``).
     """
-    if type(value) in (list, tuple):
+    if isinstance(value, (unicode, int, float, bool)):
+        # most common first
+        return value
+    elif value is None:
+        return value
+    elif isinstance(value, bytes):
+        return value.decode(encoding)
+    elif isinstance(value, (list, tuple)):
         return tuple(xml_unwrap(v, encoding) for v in value)
-    if type(value) is dict:
+    elif isinstance(value, dict):
         if '__dns_name__' in value:
             return DNSName(value['__dns_name__'])
         else:
             return dict(
                 (k, xml_unwrap(v, encoding)) for (k, v) in value.items()
             )
-    if isinstance(value, bytes):
-        return value.decode(encoding)
-    if isinstance(value, Binary):
+    elif isinstance(value, Binary):
         assert type(value.data) is bytes
         return value.data
-    if isinstance(value, DateTime):
+    elif isinstance(value, DateTime):
         # xmlprc DateTime is converted to string of %Y%m%dT%H:%M:%S format
         return datetime.datetime.strptime(str(value), "%Y%m%dT%H:%M:%S")
-    assert type(value) in (unicode, int, float, bool, type(None))
-    return value
+    raise TypeError(value)
 
 
 def xml_dumps(params, version, methodname=None, methodresponse=False,
@@ -325,6 +333,7 @@ class _JSONPrimer(dict):
             tuple: self._enc_list,
             dict: self._enc_dict,
             crypto_x509.Certificate: self._enc_certificate,
+            crypto_x509.CertificateSigningRequest: self._enc_certificate,
         })
         # int, long
         for t in six.integer_types:
@@ -527,7 +536,9 @@ class LanguageAwareTransport(MultiProtocolTransport):
             self, host)
 
         try:
-            lang = locale.setlocale(locale.LC_ALL, '').split('.')[0].lower()
+            lang = locale.setlocale(
+                locale.LC_MESSAGES, ''
+            ).split('.')[0].lower()
         except locale.Error:
             # fallback to default locale
             lang = 'en_us'
@@ -556,7 +567,7 @@ class SSLTransport(LanguageAwareTransport):
 
         conn = create_https_connection(
             host, 443,
-            api.env.tls_ca_cert,
+            getattr(context, 'ca_certfile', None),
             tls_version_min=api.env.tls_version_min,
             tls_version_max=api.env.tls_version_max)
 
@@ -902,7 +913,7 @@ class RPCClient(Connectible):
         try:
             cookie_string = read_persistent_client_session_data(principal)
             if cookie_string is None:
-                return
+                return None
             cookie_string = cookie_string.decode('utf-8')
         except Exception as e:
             logger.debug('Error reading client session data: %s', e)

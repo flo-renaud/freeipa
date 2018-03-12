@@ -1005,6 +1005,8 @@ class Command(HasParam):
     def get_summary_default(self, output):
         if self.msg_summary:
             return self.msg_summary % output
+        else:
+            return None
 
     def log_messages(self, output):
         logger_functions = dict(
@@ -1035,13 +1037,21 @@ class Command(HasParam):
         Subclasses can override this method, if custom output is needed.
         """
         if not isinstance(output, dict):
-            return
+            return None
 
         rv = 0
 
         self.log_messages(output)
 
-        order = [p.name for p in self.output_params()]
+        order = []
+        labels = {}
+        flags = {}
+
+        for p in self.output_params():
+            order.append(p.name)
+            labels[p.name] = unicode(p.label)
+            flags[p.name] = p.flags
+
         if options.get('all', False):
             order.insert(0, 'dn')
             print_all = True
@@ -1050,9 +1060,6 @@ class Command(HasParam):
 
         if options.get('raw', False):
             labels = None
-        else:
-            labels = dict((p.name, unicode(p.label)) for p in self.output_params())
-        flags = dict((p.name, p.flags) for p in self.output_params())
 
         for o in self.output:
             outp = self.output[o]

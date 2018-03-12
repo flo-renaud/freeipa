@@ -32,9 +32,11 @@ import ldap
 
 from ipalib import api, errors
 from ipalib.cli import textui
+from ipalib.text import _
 from ipapython import ipautil, ipaldap, kerberos
 from ipapython.admintool import ScriptError
 from ipapython.dn import DN
+from ipapython.ipaldap import ldap_initialize
 from ipaplatform.paths import paths
 from ipaserver.install import installutils
 
@@ -1076,13 +1078,10 @@ class ReplicationManager(object):
         self.ad_suffix = ""
         try:
             # Validate AD connection
-            ad_conn = ldap.initialize('ldap://%s' % ipautil.format_netloc(ad_dc_name))
-            # the next one is to workaround bugs arounf opendalp libs+NSS db
-            # we need to first specify the OPT_X_TLS_CACERTFILE and _after_
-            # that initialize the context to prevent TLS connection errors:
-            # https://bugzilla.redhat.com/show_bug.cgi?id=800787
-            ad_conn.set_option(ldap.OPT_X_TLS_CACERTFILE, cacert)
-            ad_conn.set_option(ldap.OPT_X_TLS_NEWCTX, 0)
+            ad_conn = ldap_initialize(
+                'ldap://%s' % ipautil.format_netloc(ad_dc_name),
+                cacertfile=cacert
+            )
             ad_conn.start_tls_s()
             ad_conn.simple_bind_s(str(ad_binddn), ad_pwd)
             res = ad_conn.search_s("", ldap.SCOPE_BASE, '(objectClass=*)',
@@ -1547,6 +1546,11 @@ class ReplicationManager(object):
         Disable the replication agreement to hostname.
         """
         entry = self.get_replication_agreement(hostname)
+        if not entry:
+            raise errors.NotFound(reason=_(
+                "Replication agreement for %(hostname)s not found") % {
+                    'hostname': hostname
+                })
         entry['nsds5ReplicaEnabled'] = 'off'
 
         try:
@@ -1561,6 +1565,11 @@ class ReplicationManager(object):
         Note: for replication to work it needs to be enabled both ways.
         """
         entry = self.get_replication_agreement(hostname)
+        if not entry:
+            raise errors.NotFound(reason=_(
+                "Replication agreement for %(hostname)s not found") % {
+                    'hostname': hostname
+                })
         entry['nsds5ReplicaEnabled'] = 'on'
 
         try:

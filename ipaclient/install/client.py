@@ -54,8 +54,6 @@ from ipapython.install.core import group, knob, extend_knob
 from ipapython.install.common import step
 from ipapython.ipautil import (
     CalledProcessError,
-    dir_exists,
-    file_exists,
     realm_to_suffix,
     run,
     user_input,
@@ -192,7 +190,7 @@ def nssldap_exists():
         for file_type in ['mandatory', 'optional']:
             try:
                 for filename in function[file_type]:
-                    if file_exists(filename):
+                    if os.path.isfile(filename):
                         files_found[function['function']].append(filename)
                         if file_type == 'mandatory':
                             retval = True
@@ -605,7 +603,7 @@ def hardcode_ldap_server(cli_server):
     DNS Discovery didn't return a valid IPA server, hardcode a value into
     the file instead.
     """
-    if not file_exists(paths.LDAP_CONF):
+    if not os.path.isfile(paths.LDAP_CONF):
         return
 
     ldapconf = IPAChangeConf("IPA Installer")
@@ -790,8 +788,13 @@ def configure_certmonger(
     try:
         certmonger.request_cert(
             certpath=paths.IPA_NSSDB_DIR,
-            nickname='Local IPA host', subject=subject, dns=[hostname],
-            principal=principal, passwd_fname=passwd_fname)
+            storage='NSSDB',
+            nickname='Local IPA host',
+            subject=subject,
+            dns=[hostname],
+            principal=principal,
+            passwd_fname=passwd_fname
+        )
     except Exception as ex:
         logger.error(
             "%s request for host certificate failed: %s",
@@ -859,8 +862,8 @@ def configure_sssd_conf(
         sssd_enable_service(sssdconfig, 'ifp')
 
     if (
-        (options.conf_ssh and file_exists(paths.SSH_CONFIG)) or
-        (options.conf_sshd and file_exists(paths.SSHD_CONFIG))
+        (options.conf_ssh and os.path.isfile(paths.SSH_CONFIG)) or
+        (options.conf_sshd and os.path.isfile(paths.SSHD_CONFIG))
     ):
         try:
             sssdconfig.new_service('ssh')
@@ -1032,7 +1035,7 @@ def change_ssh_config(filename, changes, sections):
 
 
 def configure_ssh_config(fstore, options):
-    if not file_exists(paths.SSH_CONFIG):
+    if not os.path.isfile(paths.SSH_CONFIG):
         logger.info("%s not found, skipping configuration", paths.SSH_CONFIG)
         return
 
@@ -1040,7 +1043,7 @@ def configure_ssh_config(fstore, options):
 
     changes = {'PubkeyAuthentication': 'yes'}
 
-    if options.sssd and file_exists(paths.SSS_SSH_KNOWNHOSTSPROXY):
+    if options.sssd and os.path.isfile(paths.SSS_SSH_KNOWNHOSTSPROXY):
         changes[
             'ProxyCommand'] = '%s -p %%p %%h' % paths.SSS_SSH_KNOWNHOSTSPROXY
         changes['GlobalKnownHostsFile'] = paths.SSSD_PUBCONF_KNOWN_HOSTS
@@ -1055,7 +1058,7 @@ def configure_ssh_config(fstore, options):
 def configure_sshd_config(fstore, options):
     sshd = services.knownservices.sshd
 
-    if not file_exists(paths.SSHD_CONFIG):
+    if not os.path.isfile(paths.SSHD_CONFIG):
         logger.info("%s not found, skipping configuration", paths.SSHD_CONFIG)
         return
 
@@ -1069,7 +1072,7 @@ def configure_sshd_config(fstore, options):
         'ChallengeResponseAuthentication': 'yes',
     }
 
-    if options.sssd and file_exists(paths.SSS_SSH_AUTHORIZEDKEYS):
+    if options.sssd and os.path.isfile(paths.SSS_SSH_AUTHORIZEDKEYS):
         authorized_keys_changes = None
 
         candidates = (
@@ -1088,7 +1091,7 @@ def configure_sshd_config(fstore, options):
         )
 
         for candidate in candidates:
-            args = ['sshd', '-t', '-f', os.devnull]
+            args = [paths.SSHD, '-t', '-f', os.devnull]
             for item in candidate.items():
                 args.append('-o')
                 args.append('%s=%s' % item)
@@ -1120,7 +1123,7 @@ def configure_automount(options):
     logger.info('\nConfiguring automount:')
 
     args = [
-        'ipa-client-automount', '--debug', '-U', '--location',
+        paths.IPA_CLIENT_AUTOMOUNT, '--debug', '-U', '--location',
         options.location
     ]
 
@@ -1196,8 +1199,7 @@ def get_iface_from_ip(ip_addr):
             for ip in if_addrs.get(family, []):
                 if ip['addr'] == ip_addr:
                     return interface
-    else:
-        raise RuntimeError("IP %s not assigned to any interface." % ip_addr)
+    raise RuntimeError("IP %s not assigned to any interface." % ip_addr)
 
 
 def get_local_ipaddresses(iface=None):
@@ -1277,9 +1279,11 @@ def update_dns(server, hostname, options):
         ips = get_local_ipaddresses()
     except CalledProcessError as e:
         logger.error("Cannot update DNS records. %s", e)
-        logger.debug("Unable to get local IP addresses.")
+        ips = None
 
     if options.all_ip_addresses:
+        if ips is None:
+            raise RuntimeError("Unable to get local IP addresses.")
         update_ips = ips
     elif options.ip_addresses:
         update_ips = []
@@ -1390,6 +1394,7 @@ def verify_dns_update(fqdn, ips):
 def get_server_connection_interface(server):
     """Connect to IPA server, get all ip addresses of interface used to connect
     """
+    last_error = None
     for res in socket.getaddrinfo(
             server, 389, socket.AF_UNSPEC, socket.SOCK_STREAM):
         af, socktype, proto, _canonname, sa = res
@@ -1397,7 +1402,6 @@ def get_server_connection_interface(server):
             s = socket.socket(af, socktype, proto)
         except socket.error as e:
             last_error = e
-            s = None
             continue
         try:
             s.connect(sa)
@@ -1413,11 +1417,11 @@ def get_server_connection_interface(server):
             return get_iface_from_ip(ip)
         except (CalledProcessError, RuntimeError) as e:
             last_error = e
-    else:
-        msg = "Cannot get server connection interface"
-        if last_error:
-            msg += ": %s" % (last_error)
-        raise RuntimeError(msg)
+
+    msg = "Cannot get server connection interface"
+    if last_error:
+        msg += ": %s" % last_error
+    raise RuntimeError(msg)
 
 
 def client_dns(server, hostname, options):
@@ -1779,8 +1783,8 @@ def get_ca_certs(fstore, options, server, basedn, realm):
                                       override)
         else:
             # Auth with user credentials
+            url = ldap_url()
             try:
-                url = ldap_url()
                 ca_certs = get_ca_certs_from_ldap(server, basedn, realm)
                 validate_new_ca_certs(existing_ca_certs, ca_certs, interactive)
             except errors.FileError as e:
@@ -1823,7 +1827,7 @@ def get_ca_certs(fstore, options, server, basedn, realm):
 
         if ca_certs is None and existing_ca_certs is None:
             raise errors.InternalError(u"expected CA cert file '%s' to "
-                                       u"exist, but it's absent" % (ca_file))
+                                       u"exist, but it's absent" % ca_file)
 
     if ca_certs is not None:
         try:
@@ -1875,19 +1879,19 @@ def configure_firefox(options, statestore, domain):
         if options.firefox_dir is not None:
             pref_path = os.path.join(options.firefox_dir,
                                      FIREFOX_PREFERENCES_REL_PATH)
-            if dir_exists(pref_path):
+            if os.path.isdir(pref_path):
                 preferences_dir = pref_path
             else:
                 logger.error("Directory '%s' does not exists.", pref_path)
         else:
             # test if firefox is installed
-            if file_exists(paths.FIREFOX):
+            if os.path.isfile(paths.FIREFOX):
 
                 # find valid preferences path
                 for path in [paths.LIB_FIREFOX, paths.LIB64_FIREFOX]:
                     pref_path = os.path.join(path,
                                              FIREFOX_PREFERENCES_REL_PATH)
-                    if dir_exists(pref_path):
+                    if os.path.isdir(pref_path):
                         preferences_dir = pref_path
                         break
             else:
@@ -2302,21 +2306,21 @@ def install_check(options):
         raise ScriptError(rval=CLIENT_INSTALL_ERROR)
 
 
-def create_ipa_nssdb():
-    db = certdb.NSSDatabase(paths.IPA_NSSDB_DIR)
+def create_ipa_nssdb(db=None):
+    if db is None:
+        db = certdb.NSSDatabase(paths.IPA_NSSDB_DIR)
     db.create_db(mode=0o755, backup=True)
     os.chmod(db.pwd_file, 0o600)
-    os.chmod(os.path.join(db.secdir, 'cert8.db'), 0o644)
-    os.chmod(os.path.join(db.secdir, 'key3.db'), 0o644)
-    os.chmod(os.path.join(db.secdir, 'secmod.db'), 0o644)
 
 
 def update_ipa_nssdb():
     ipa_db = certdb.NSSDatabase(paths.IPA_NSSDB_DIR)
     sys_db = certdb.NSSDatabase(paths.NSS_DB_DIR)
 
-    if not os.path.exists(os.path.join(ipa_db.secdir, 'cert8.db')):
-        create_ipa_nssdb()
+    if not ipa_db.exists():
+        create_ipa_nssdb(ipa_db)
+    if ipa_db.dbtype == 'dbm':
+        ipa_db.convert_db(rename_old=False)
 
     for nickname, trust_flags in (
             ('IPA CA', certdb.IPA_CA_TRUST_FLAGS),
@@ -2432,9 +2436,10 @@ def _install(options):
     if not options.on_master:
         nolog = tuple()
         # First test out the kerberos configuration
+        fd, krb_name = tempfile.mkstemp()
+        os.close(fd)
+        ccache_dir = tempfile.mkdtemp(prefix='krbcc')
         try:
-            (krb_fd, krb_name) = tempfile.mkstemp()
-            os.close(krb_fd)
             configure_krb5_conf(
                 cli_realm=cli_realm,
                 cli_domain=cli_domain,
@@ -2447,7 +2452,6 @@ def _install(options):
                 configure_sssd=options.sssd,
                 force=options.force)
             env['KRB5_CONFIG'] = krb_name
-            ccache_dir = tempfile.mkdtemp(prefix='krbcc')
             ccache_name = os.path.join(ccache_dir, 'ccache')
             join_args = [paths.SBIN_IPA_JOIN,
                          "-s", cli_server[0],
@@ -2580,7 +2584,7 @@ def _install(options):
                 subject_base = DN(subject_base)
 
             if options.principal is not None:
-                run(["kdestroy"], raiseonerr=False, env=env)
+                run([paths.KDESTROY], raiseonerr=False, env=env)
 
             # Obtain the TGT. We do it with the temporary krb5.conf, so that
             # only the KDC we're installing under is contacted.
@@ -2804,7 +2808,7 @@ def _install(options):
     nscd = services.knownservices.nscd
     if nscd.is_installed():
         save_state(nscd, statestore)
-
+        nscd_service_action = None
         try:
             if options.sssd:
                 nscd_service_action = 'stop'
@@ -2915,7 +2919,7 @@ def _install(options):
             # Particulary, SSSD might take longer than 6-8 seconds.
             while n < 10 and not found:
                 try:
-                    ipautil.run(["getent", "passwd", user])
+                    ipautil.run([paths.GETENT, "passwd", user])
                     found = True
                 except Exception as e:
                     time.sleep(1)
@@ -2997,7 +3001,7 @@ def uninstall(options):
     statestore = sysrestore.StateFile(paths.IPA_CLIENT_SYSRESTORE)
 
     try:
-        run(["ipa-client-automount", "--uninstall", "--debug"])
+        run([paths.IPA_CLIENT_AUTOMOUNT, "--uninstall", "--debug"])
     except Exception as e:
         logger.error(
             "Unconfigured automount client failed: %s", str(e))
@@ -3069,11 +3073,8 @@ def uninstall(options):
             logger.error("%s failed to stop tracking certificate: %s",
                          cmonger.service_name, e)
 
-    for filename in (os.path.join(ipa_db.secdir, 'cert8.db'),
-                     os.path.join(ipa_db.secdir, 'key3.db'),
-                     os.path.join(ipa_db.secdir, 'secmod.db'),
-                     os.path.join(ipa_db.secdir, 'pwdfile.txt')):
-        remove_file(filename)
+    for filename in certdb.NSS_FILES:
+        remove_file(os.path.join(ipa_db.secdir, filename))
 
     # Remove any special principal names we added to the IPA CA helper
     certmonger.remove_principal_from_cas()
@@ -3285,7 +3286,7 @@ def uninstall(options):
         preferences_fname = statestore.restore_state(
             'firefox', 'preferences_fname')
         if preferences_fname is not None:
-            if file_exists(preferences_fname):
+            if os.path.isfile(preferences_fname):
                 try:
                     os.remove(preferences_fname)
                 except Exception as e:

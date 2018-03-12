@@ -25,15 +25,14 @@ from __future__ import print_function
 import os
 import shutil
 import tempfile
+import unittest
 
-import nose
 import six
 import pytest
 
 from ipatests.i18n import create_po, po_file_iterate
 from ipalib.request import context
 from ipalib import text
-from ipapython.ipautil import file_exists
 
 if six.PY3:
     unicode = str
@@ -103,15 +102,17 @@ class test_TestLang(object):
 
         result = create_po(self.pot_file, self.po_file, self.mo_file)
         if result:
-            raise nose.SkipTest('Unable to create po file "%s" & mo file "%s" from pot file "%s"' %
-                                (self.po_file, self.mo_file, self.pot_file))
+            raise unittest.SkipTest(
+                'Unable to create po file "%s" & mo file "%s" from pot '
+                'file "%s"' % (self.po_file, self.mo_file, self.pot_file)
+            )
 
-        if not file_exists(self.po_file):
-            raise nose.SkipTest(
+        if not os.path.isfile(self.po_file):
+            raise unittest.SkipTest(
                 'Test po file unavailable: {}'.format(self.po_file))
 
-        if not file_exists(self.mo_file):
-            raise nose.SkipTest(
+        if not os.path.isfile(self.mo_file):
+            raise unittest.SkipTest(
                 'Test mo file unavailable: {}'.format(self.mo_file))
 
         self.po_file_iterate = po_file_iterate

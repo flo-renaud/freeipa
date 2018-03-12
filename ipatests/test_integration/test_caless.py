@@ -21,10 +21,10 @@ import logging
 import os
 import tempfile
 import shutil
-import base64
 import glob
 import contextlib
-import nose
+import unittest
+
 import pytest
 import six
 
@@ -33,9 +33,9 @@ from ipapython import ipautil
 from ipaplatform.paths import paths
 from ipapython.dn import DN
 from ipatests.test_integration.base import IntegrationTest
-from ipatests.test_integration import create_caless_pki
-from ipatests.test_integration.create_external_ca import ExternalCA
 from ipatests.pytest_plugins.integration import tasks
+from ipatests.pytest_plugins.integration.create_external_ca import ExternalCA
+from ipatests.pytest_plugins.integration import create_caless_pki
 from ipalib.constants import DOMAIN_LEVEL_0
 
 if six.PY3:
@@ -66,6 +66,9 @@ def get_install_stdin(cert_passwords=()):
 
 def get_replica_prepare_stdin(cert_passwords=()):
     lines = list(cert_passwords)  # Enter foo.p12 unlock password
+    lines += [
+        'yes',  # Continue [no]?
+    ]
     return '\n'.join(lines + [''])
 
 
@@ -120,6 +123,8 @@ class CALessBase(IntegrationTest):
     def install(cls, mh):
         cls.cert_dir = tempfile.mkdtemp(prefix="ipatest-")
         cls.pem_filename = os.path.join(cls.cert_dir, 'root.pem')
+        cls.ca2_crt = 'ca2_crt.pem'
+        cls.ca2_kdc_crt = 'ca2_kdc_crt.pem'
         cls.cert_password = cls.master.config.admin_password
         cls.crl_path = os.path.join(cls.master.config.test_dir, 'crl')
 
@@ -157,8 +162,6 @@ class CALessBase(IntegrationTest):
     def uninstall(cls, mh):
         # Remove the NSS database
         shutil.rmtree(cls.cert_dir)
-        for host in cls.get_all_hosts():
-            tasks.uninstall_master(host)
         super(CALessBase, cls).uninstall(mh)
 
     @classmethod
@@ -321,7 +324,7 @@ class CALessBase(IntegrationTest):
 
         # to construct whole chain e.g "ca1 - ca1/sub - ca1/sub/server"
         for index, _value in enumerate(nick_chain):
-            cert_nick = '/'.join(nick_chain[:index+1])
+            cert_nick = '/'.join(nick_chain[:index + 1])
             cert_path = '{}.crt'.format(os.path.join(cls.cert_dir, cert_nick))
             if os.path.isfile(cert_path):
                 fname_chain.append(cert_path)
@@ -332,17 +335,19 @@ class CALessBase(IntegrationTest):
                 with open(cert_fname) as cert:
                     chain.write(cert.read())
 
-        ipautil.run(["openssl", "pkcs12", "-export", "-out", filename,
+        ipautil.run([paths.OPENSSL, "pkcs12", "-export", "-out", filename,
                      "-inkey", key_fname, "-in", certchain_fname, "-passin",
-                     "pass:"+cls.cert_password, "-passout", "pass:"+password,
-                     "-name", nickname], cwd=cls.cert_dir)
+                     "pass:" + cls.cert_password, "-passout", "pass:" +
+                     password, "-name", nickname], cwd=cls.cert_dir)
 
     @classmethod
-    def prepare_cacert(cls, nickname):
+    def prepare_cacert(cls, nickname, filename=None):
         """ Prepare pem file for root_ca_file/ca-cert-file option """
+        if filename is None:
+            filename = cls.pem_filename.split(os.sep)[-1]
         # create_caless_pki saves certificates with ".crt" extension by default
         fname_from_nick = '{}.crt'.format(os.path.join(cls.cert_dir, nickname))
-        shutil.copy(fname_from_nick, cls.pem_filename)
+        shutil.copy(fname_from_nick, os.path.join(cls.cert_dir, filename))
 
     @classmethod
     def get_pem(cls, nickname):
@@ -356,14 +361,13 @@ class CALessBase(IntegrationTest):
 
         Called from every positive server install test
         """
-        with open(self.pem_filename) as f:
+        with open(self.pem_filename, 'rb') as f:
             expected_cacrt = f.read()
         logger.debug('Expected /etc/ipa/ca.crt contents:\n%s',
-                     expected_cacrt)
-        expected_binary_cacrt = base64.b64decode(x509.strip_header(
-            expected_cacrt))
-        logger.debug('Expected binary CA cert:\n%r',
-                     expected_binary_cacrt)
+                     expected_cacrt.decode('utf-8'))
+        expected_cacrt = x509.load_unknown_x509_certificate(expected_cacrt)
+        logger.debug('Expected CA cert:\n%r',
+                     expected_cacrt.public_bytes(x509.Encoding.PEM))
         for host in [self.master] + self.replicas:
             # Check the LDAP entry
             ldap = host.ldap_connect()
@@ -372,8 +376,8 @@ class CALessBase(IntegrationTest):
                                       ('cn', 'etc'), host.domain.basedn))
             cert_from_ldap = entry.single_value['cACertificate']
             logger.debug('CA cert from LDAP on %s:\n%r',
-                         host, cert_from_ldap)
-            assert cert_from_ldap == expected_binary_cacrt
+                         host, cert_from_ldap.public_bytes(x509.Encoding.PEM))
+            assert cert_from_ldap == expected_cacrt
 
             # Verify certmonger was not started
             result = host.run_command(['getcert', 'list'], raiseonerr=False)
@@ -383,11 +387,11 @@ class CALessBase(IntegrationTest):
             # Check the cert PEM file
             remote_cacrt = host.get_file_contents(paths.IPA_CA_CRT)
             logger.debug('%s:/etc/ipa/ca.crt contents:\n%s',
-                         host, remote_cacrt)
-            binary_cacrt = base64.b64decode(x509.strip_header(remote_cacrt))
+                         host, remote_cacrt.decode('utf-8'))
+            cacrt = x509.load_unknown_x509_certificate(remote_cacrt)
             logger.debug('%s: Decoded /etc/ipa/ca.crt:\n%r',
-                         host, binary_cacrt)
-            assert expected_binary_cacrt == binary_cacrt
+                         host, cacrt.public_bytes(x509.Encoding.PEM))
+            assert expected_cacrt == cacrt
 
 
 class TestServerInstall(CALessBase):
@@ -434,7 +438,10 @@ class TestServerInstall(CALessBase):
 
         self.create_pkcs12('ca1/server')
         self.prepare_cacert('ca1')
-        self.prepare_cacert('ca2')
+        self.prepare_cacert('ca2', filename=self.ca2_crt)
+        with open(self.pem_filename, 'a') as ca1:
+            with open(os.path.join(self.cert_dir, self.ca2_crt), 'r') as ca2:
+                ca1.write(ca2.read())
 
         result = self.install_server()
         assert_error(result, 'root.pem contains more than one certificate')
@@ -525,7 +532,8 @@ class TestServerInstall(CALessBase):
     def test_invalid_ds_cn(self):
         "IPA server install with DS certificate with invalid CN"
 
-        self.create_pkcs12('ca1/replica', filename='dirsrv.p12')
+        self.create_pkcs12('ca1/server', filename='http.p12')
+        self.create_pkcs12('ca1/server-badname', filename='dirsrv.p12')
         self.prepare_cacert('ca1')
 
         result = self.install_server(http_pkcs12='http.p12',
@@ -602,7 +610,7 @@ class TestServerInstall(CALessBase):
                                      dirsrv_pkcs12='dirsrv.p12')
 
         if result.returncode == 0:
-            raise nose.SkipTest(
+            raise unittest.SkipTest(
                 "Known CA-less installation defect, see "
                 "https://fedorahosted.org/freeipa/ticket/4270")
 
@@ -620,7 +628,7 @@ class TestServerInstall(CALessBase):
                                      dirsrv_pkcs12='dirsrv.p12')
 
         if result.returncode == 0:
-            raise nose.SkipTest(
+            raise unittest.SkipTest(
                 "Known CA-less installation defect, see "
                 "https://fedorahosted.org/freeipa/ticket/4270")
 
@@ -798,6 +806,7 @@ class TestReplicaInstall(CALessBase):
         cls.prepare_cacert('ca1')
         result = cls.install_server()
         assert result.returncode == 0
+        cls.domain_level = tasks.domainlevel(cls.master)
 
     @replica_install_teardown
     def test_no_certs(self):
@@ -965,7 +974,7 @@ class TestReplicaInstall(CALessBase):
                                       dirsrv_pkcs12='dirsrv.p12')
 
         if result.returncode == 0:
-            raise nose.SkipTest(
+            raise unittest.SkipTest(
                 "Known CA-less installation defect, see "
                 "https://fedorahosted.org/freeipa/ticket/4270")
 
@@ -982,7 +991,7 @@ class TestReplicaInstall(CALessBase):
                                       dirsrv_pkcs12='dirsrv.p12')
 
         if result.returncode == 0:
-            raise nose.SkipTest(
+            raise unittest.SkipTest(
                 "Known CA-less installation defect, see "
                 "https://fedorahosted.org/freeipa/ticket/4270")
 
@@ -1266,7 +1275,7 @@ class TestCertInstall(CALessBase):
                     filename='server.p12', pin=_DEFAULT, stdin_text=None,
                     p12_pin=None, args=None):
         if cert_nick:
-            self.create_pkcs12(cert_nick, password=p12_pin)
+            self.create_pkcs12(cert_nick, password=p12_pin, filename=filename)
         if pin is _DEFAULT:
             pin = self.cert_password
         if cert_exists:
@@ -1365,7 +1374,7 @@ class TestCertInstall(CALessBase):
         result = self.certinstall('w', 'ca1/server-revoked')
 
         if result.returncode == 0:
-            raise nose.SkipTest(
+            raise unittest.SkipTest(
                 "Known CA-less installation defect, see "
                 "https://fedorahosted.org/freeipa/ticket/4270")
 
@@ -1377,7 +1386,7 @@ class TestCertInstall(CALessBase):
         result = self.certinstall('d', 'ca1/server-revoked')
 
         if result.returncode == 0:
-            raise nose.SkipTest(
+            raise unittest.SkipTest(
                 "Known CA-less installation defect, see "
                 "https://fedorahosted.org/freeipa/ticket/4270")
 
@@ -1492,6 +1501,26 @@ class TestCertInstall(CALessBase):
                                   args=args, stdin_text=stdin_text)
         assert_error(result, "no such option: --dirsrv-pin")
 
+    def test_anon_pkinit_with_external_CA(self):
+
+        test_dir = self.master.config.test_dir
+        self.prepare_cacert('ca2', filename=self.ca2_crt)
+        self.copy_cert(self.master, self.ca2_crt)
+
+        result = self.master.run_command(['ipa-cacert-manage', 'install',
+                                          os.path.join(test_dir, self.ca2_crt)]
+                                         )
+        assert result.returncode == 0
+        result = self.master.run_command(['ipa-certupdate'])
+        assert result.returncode == 0
+        result = self.certinstall('k', 'ca2/server-kdc',
+                                  filename=self.ca2_kdc_crt)
+        assert result.returncode == 0
+        result = self.master.run_command(['systemctl', 'restart', 'krb5kdc'])
+        assert result.returncode == 0
+        result = self.master.run_command(['kinit', '-n'])
+        assert result.returncode == 0
+
 
 class TestPKINIT(CALessBase):
     """Install master and replica with PKINIT"""
@@ -1541,18 +1570,24 @@ class TestServerReplicaCALessToCAFull(CALessBase):
     def test_server_ipa_ca_install(self):
         """Install CA on master"""
 
-        ca_master = tasks.install_ca(self.master)
-        assert ca_master.returncode == 0
-        cert_update_master = self.master.run_command(['ipa-certupdate'])
-        assert cert_update_master.returncode == 0
-        cert_update_replica = self.replicas[0].run_command(['ipa-certupdate'])
-        assert cert_update_replica.returncode == 0
+        tasks.install_ca(self.master)
+        # We are not calling ipa-certupdate on replica here since the next step
+        # installs CA clone there.
+
+        ca_show = self.master.run_command(['ipa', 'ca-show', 'ipa'])
+        assert 'Subject DN: CN=Certificate Authority,O={}'.format(
+            self.master.domain.realm) in ca_show.stdout_text
 
     def test_replica_ipa_ca_install(self):
         """Install CA on replica"""
 
-        ca_replica = tasks.install_ca(self.replicas[0])
-        assert ca_replica.returncode == 0
+        replica = self.replicas[0]
+
+        tasks.install_ca(replica)
+
+        ca_show = replica.run_command(['ipa', 'ca-show', 'ipa'])
+        assert 'Subject DN: CN=Certificate Authority,O={}'.format(
+            self.master.domain.realm) in ca_show.stdout_text
 
 
 class TestReplicaCALessToCAFull(CALessBase):

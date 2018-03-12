@@ -30,7 +30,6 @@ dist_app_DATA =				\
 	anon-princ-aci.ldif		\
 	bootstrap-template.ldif		\
 	ca-topology.uldif		\
-	caJarSigningCert.cfg.template	\
 	custodia.conf.template		\
 	default-aci.ldif		\
 	default-hbac.ldif		\
@@ -38,6 +37,7 @@ dist_app_DATA =				\
 	default-trust-view.ldif		\
 	delegation.ldif			\
 	replica-acis.ldif		\
+	replica-prevent-time-skew.ldif  \
 	ds-nfiles.ldif			\
 	dns.ldif			\
 	dnssec.ldif			\
@@ -79,17 +79,21 @@ dist_app_DATA =				\
 	sudobind.ldif			\
 	automember.ldif			\
 	replica-automember.ldif		\
-	replica-s4u2proxy.ldif		\
 	sasl-mapping-fallback.ldif	\
 	schema-update.ldif		\
 	vault.ldif			\
 	kdcproxy-enable.uldif		\
 	kdcproxy-disable.uldif		\
 	ipa-httpd.conf.template		\
+	ipa-httpd-wsgi.conf.template	\
 	gssapi.login			\
 	gssproxy.conf.template		\
 	kdcproxy.wsgi			\
 	ipakrb5.aug			\
+	ipa.conf.template		\
+	ipa-kdc-proxy.conf.template	\
+	ipa-pki-proxy.conf.template	\
+	ipa-rewrite.conf.template	\
 	$(NULL)
 
 kdcproxyconfdir = $(IPA_SYSCONF_DIR)/kdcproxy

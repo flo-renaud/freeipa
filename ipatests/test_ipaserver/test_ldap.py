@@ -27,16 +27,14 @@
 
 import os
 import sys
+import unittest
 
 import pytest
-import nose
-from nose.tools import assert_raises  # pylint: disable=E0611
 import six
 
 from ipaplatform.paths import paths
 from ipaserver.plugins.ldap2 import ldap2, AUTOBIND_DISABLED
 from ipalib import api, create_api, errors
-from ipapython import ipautil
 from ipapython.dn import DN
 
 if six.PY3:
@@ -44,6 +42,7 @@ if six.PY3:
 
 
 @pytest.mark.tier0
+@pytest.mark.needs_ipaapi
 class test_ldap(object):
     """
     Test various LDAP client bind methods.
@@ -85,11 +84,13 @@ class test_ldap(object):
         Test a simple LDAP bind using ldap2
         """
         pwfile = api.env.dot_ipa + os.sep + ".dmpw"
-        if ipautil.file_exists(pwfile):
+        if os.path.isfile(pwfile):
             with open(pwfile, "r") as fp:
                 dm_password = fp.read().rstrip()
         else:
-            raise nose.SkipTest("No directory manager password in %s" % pwfile)
+            raise unittest.SkipTest(
+                "No directory manager password in %s" % pwfile
+            )
         self.conn = ldap2(api)
         self.conn.connect(bind_dn=DN(('cn', 'directory manager')), bind_pw=dm_password)
         entry_attrs = self.conn.get_entry(self.dn, ['usercertificate'])
@@ -109,11 +110,13 @@ class test_ldap(object):
         myapi.finalize()
 
         pwfile = api.env.dot_ipa + os.sep + ".dmpw"
-        if ipautil.file_exists(pwfile):
+        if os.path.isfile(pwfile):
             with open(pwfile, "r") as fp:
                 dm_password = fp.read().rstrip()
         else:
-            raise nose.SkipTest("No directory manager password in %s" % pwfile)
+            raise unittest.SkipTest(
+                "No directory manager password in %s" % pwfile
+            )
         myapi.Backend.ldap2.connect(bind_dn=DN(('cn', 'Directory Manager')), bind_pw=dm_password)
 
         result = myapi.Command['service_show']('ldap/%s@%s' %  (api.env.host, api.env.realm,))
@@ -129,13 +132,14 @@ class test_ldap(object):
         try:
             self.conn.connect(autobind=True)
         except errors.ACIError:
-            raise nose.SkipTest("Only executed as root")
+            raise unittest.SkipTest("Only executed as root")
         entry_attrs = self.conn.get_entry(self.dn, ['usercertificate'])
         cert = entry_attrs.get('usercertificate')[0]
         assert cert.serial_number is not None
 
 
 @pytest.mark.tier0
+@pytest.mark.needs_ipaapi
 class test_LDAPEntry(object):
     """
     Test the LDAPEntry class
@@ -228,7 +232,7 @@ class test_LDAPEntry(object):
         assert e.pop('cn') == self.cn1
         assert 'cn' not in e
         assert e.pop('cn', 'default') is 'default'
-        with assert_raises(KeyError):
+        with pytest.raises(KeyError):
             e.pop('cn')
 
     def test_clear(self):
