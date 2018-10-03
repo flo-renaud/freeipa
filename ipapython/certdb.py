@@ -707,7 +707,8 @@ class NSSDatabase:
                             continue
                 if loaded:
                     continue
-                raise RuntimeError("Failed to load %s" % filename)
+                raise RuntimeError(
+                    "Failed to load %s, please check key password" % filename)
 
             # Try to load the file as DER certificate
             try:
@@ -749,7 +750,8 @@ class NSSDatabase:
 
                     continue
 
-            raise RuntimeError("Failed to load %s" % filename)
+            raise RuntimeError(
+                "Failed to load %s, please check key password" % filename)
 
         if import_keys and not key_file:
             raise RuntimeError(
