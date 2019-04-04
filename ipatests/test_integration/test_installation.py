@@ -149,7 +149,6 @@ class ADTrustInstallTestBase(IntegrationTest):
 # Master X Replicas installation tests
 ##
 
-@pytest.mark.xfail(reason="FreeIPA ticket 7008")
 class TestInstallWithCA1(InstallTestBase1):
 
     @classmethod
@@ -172,7 +171,6 @@ class TestInstallWithCA1(InstallTestBase1):
         super(TestInstallWithCA1, self).test_replica2_ipa_dns_install()
 
 
-@pytest.mark.xfail(reason="FreeIPA ticket 7008")
 class TestInstallWithCA2(InstallTestBase2):
 
     @classmethod
@@ -207,7 +205,6 @@ class TestInstallWithCA_KRA2(InstallTestBase2):
         tasks.install_master(cls.master, setup_dns=False, setup_kra=True)
 
 
-@pytest.mark.xfail(reason="FreeIPA ticket 7008")
 class TestInstallWithCA_DNS1(InstallTestBase1):
 
     @classmethod
@@ -230,7 +227,6 @@ class TestInstallWithCA_DNS1(InstallTestBase1):
         super(TestInstallWithCA_DNS1, self).test_replica2_ipa_dns_install()
 
 
-@pytest.mark.xfail(reason="FreeIPA ticket 7008")
 class TestInstallWithCA_DNS2(InstallTestBase2):
 
     @classmethod
