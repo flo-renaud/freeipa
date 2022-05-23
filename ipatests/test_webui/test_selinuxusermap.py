@@ -144,6 +144,7 @@ class test_selinuxusermap(UI_driver):
 
         # test add and add another record
         self.add_record(selinuxmap.ENTITY, [selinuxmap.DATA, selinuxmap.DATA2])
+        self.close_notifications()
 
         # test delete multiple records
         self.delete_record([selinuxmap.DATA, selinuxmap.DATA2])
