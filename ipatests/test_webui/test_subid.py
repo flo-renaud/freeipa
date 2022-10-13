@@ -143,5 +143,6 @@ class test_subid(UI_driver):
         self.navigate_to_entity('subid', facet='search')
         admin_uid = self.get_record_pkey("admin", "ipaowner",
                                          table_name="ipauniqueid")
-        with pytest.raises(NoSuchElementException):
+        with pytest.raises(NoSuchElementException) as excinfo:
             self.delete_record(admin_uid, table_name="ipauniqueid")
+        assert "DELETE" in str(excinfo)
