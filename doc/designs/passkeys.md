@@ -183,13 +183,13 @@ settings or another user's passkeys.
 
 New objectclass and attribute for the passkey configuration object:
 ```
-attributeTypes: ( 2.16.840.1.113730.3.8.24.26 NAME 'ipaRequireUserVerification' DESC 'require passkey user verification' EQUALITY booleanMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.7 SINGLE-VALUE X-ORIGIN 'IPA v4.10')
+attributeTypes: ( 2.16.840.1.113730.3.8.23.26 NAME 'ipaRequireUserVerification' DESC 'require passkey user verification' EQUALITY booleanMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.7 SINGLE-VALUE X-ORIGIN 'IPA v4.10')
 objectclasses: ( 2.16.840.1.113730.3.8.24.8 NAME 'ipaPasskeyConfigObject' DESC 'IPA passkey global config options' AUXILIARY MUST ipaRequireUserVerification X-ORIGIN 'IPA v4.10')
 ```
 
 New objectclass and attribute for the passkey mapping:
 ```
-attributeTypes: ( 2.16.840.1.113730.3.8.24.27 NAME 'ipapasskey' DESC 'Passkey mapping' EQUALITY caseExactMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 X-ORIGIN 'IPA v4.10' )
+attributeTypes: ( 2.16.840.1.113730.3.8.23.27 NAME 'ipapasskey' DESC 'Passkey mapping' EQUALITY caseExactMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 X-ORIGIN 'IPA v4.10' )
 objectclasses: ( 2.16.840.1.113730.3.8.24.9 NAME 'ipaPasskeyUser' DESC 'IPA passkey user' AUXILIARY MAY ipapasskey X-ORIGIN 'IPA v4.10')
 ```
 
