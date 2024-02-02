@@ -143,22 +143,27 @@ class BaseTestTrust(IntegrationTest):
         return uid, gid
 
     @contextmanager
-    def set_idoverrideuser(self, user, uid, gid):
+    def set_idoverrideuser(self, user, uid):
         """
         Fixture to add/remove idoverrideuser for default idview,
-        also creates idm group with the provided gid because
+        also creates idm group because
         gid overrides requires an existing group.
+        The fixture returns the gid of the new group.
         """
         tasks.clear_sssd_cache(self.master)
         tasks.clear_sssd_cache(self.clients[0])
         tasks.kinit_admin(self.master)
         try:
+            # Create group and extract gid
+            result = tasks.group_add(self.master, "idgroup")
+            mo = re.search(r'GID: (\d+)', result.stdout_text)
+            assert mo is not None, result.stdout_text
+            gid = mo.group(1)
+            # Create idoverride
             args = ["ipa", "idoverrideuser-add", "Default Trust View",
                     "--gid", gid, "--uid", uid, user]
             self.master.run_command(args)
-            tasks.group_add(self.master, "idgroup",
-                            extra_args=["--gid", gid])
-            yield
+            yield gid
         finally:
             self.master.run_command([
                 "ipa", "idoverrideuser-del", "Default Trust View", user]
@@ -1112,7 +1117,6 @@ class TestNonPosixAutoPrivateGroup(BaseTestTrust):
     num_ad_subdomains = 0
     num_ad_treedomains = 0
     uid_override = "99999999"
-    gid_override = "78878787"
 
     def test_add_nonposix_trust(self):
         tasks.configure_dns_for_trust(self.master, self.ad)
@@ -1150,9 +1154,8 @@ class TestNonPosixAutoPrivateGroup(BaseTestTrust):
         """
         nonposixuser = "nonposixuser@%s" % self.ad_domain
         with self.set_idoverrideuser(nonposixuser,
-                                     self.uid_override,
-                                     self.gid_override
-                                     ):
+                                     self.uid_override
+                                     ) as gid_override:
             self.mod_idrange_auto_private_group(type)
             sssd_version = tasks.get_sssd_version(self.clients[0])
             bad_version = (tasks.parse_version("2.8.2") <= sssd_version
@@ -1161,7 +1164,7 @@ class TestNonPosixAutoPrivateGroup(BaseTestTrust):
             with xfail_context(condition=cond,
                                reason="https://pagure.io/freeipa/issue/9295"):
                 (uid, gid) = self.get_user_id(self.clients[0], nonposixuser)
-                assert (uid == self.uid_override and gid == self.gid_override)
+                assert (uid == self.uid_override and gid == gid_override)
             test_group = self.clients[0].run_command(
                 ["id", nonposixuser]).stdout_text
             with xfail_context(type == "hybrid",
@@ -1280,12 +1283,11 @@ class TestPosixAutoPrivateGroup(BaseTestTrust):
         """
         posixuser = "testuser@%s" % self.ad_domain
         with self.set_idoverrideuser(posixuser,
-                                     self.uid_override,
-                                     self.gid_override):
+                                     self.uid_override) as gid_override:
             self.mod_idrange_auto_private_group(type)
             (uid, gid) = self.get_user_id(self.clients[0], posixuser)
             assert(uid == self.uid_override
-                   and gid == self.gid_override)
+                   and gid == gid_override)
             result = self.clients[0].run_command(['id', posixuser])
             assert "10047(testgroup@{0})".format(
                 self.ad_domain) in result.stdout_text
