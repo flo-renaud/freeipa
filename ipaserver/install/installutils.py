@@ -522,7 +522,8 @@ def resolve_rrsets_nss(fqdn):
 
 
 def get_server_ip_address(host_name, unattended, setup_dns, ip_addresses):
-    hostaddr = resolve_ip_addresses_nss(host_name)
+    absolute_hostname = DNSName.from_text(host_name).make_absolute().to_text()
+    hostaddr = resolve_ip_addresses_nss(absolute_hostname)
     if hostaddr.intersection(
             {ipautil.UnsafeIPAddress(ip) for ip in ['127.0.0.1', '::1']}):
         print("The hostname resolves to the localhost address (127.0.0.1/::1)", file=sys.stderr)
