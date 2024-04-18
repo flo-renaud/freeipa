@@ -34,6 +34,7 @@ import six
 from ipalib import x509
 from ipapython import ipautil
 from ipaplatform.paths import paths
+from ipaplatform.tasks import tasks as platformtasks
 from ipapython.dn import DN
 from ipatests.test_integration.base import IntegrationTest
 from ipatests.pytest_ipa.integration import tasks
@@ -361,10 +362,15 @@ class CALessBase(IntegrationTest):
                 with open(cert_fname) as cert:
                     chain.write(cert.read())
 
-        ipautil.run([paths.OPENSSL, "pkcs12", "-export", "-out", filename,
-                     "-inkey", key_fname, "-in", certchain_fname, "-passin",
-                     "pass:" + cls.cert_password, "-passout", "pass:" +
-                     password, "-name", nickname], cwd=cls.cert_dir)
+        args = [
+            paths.OPENSSL, "pkcs12", "-export", "-out", filename,
+            "-inkey", key_fname, "-in", certchain_fname, "-passin",
+            "pass:" + cls.cert_password, "-passout", "pass:" + password,
+            "-name", nickname]
+        fips_enabled = platformtasks.is_fips_enabled()
+        if fips_enabled:
+            args.append('-nomac')
+        ipautil.run(args, cwd=cls.cert_dir)
 
     @classmethod
     def prepare_cacert(cls, nickname, filename=None):
