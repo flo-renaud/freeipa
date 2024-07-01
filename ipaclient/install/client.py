@@ -3601,7 +3601,7 @@ def uninstall(options):
 
         remove_file(paths.SSSD_LDB)
         remove_file(paths.SSSD_CONFIG_LDB)
-        remove_file(paths.SSSD_SECRETS)
+        #remove_file(paths.SSSD_SECRETS)
 
         sssd_timestamps = "timestamps_" + ipa_domain + ".ldb"
         sssd_timestamps_file = os.path.join(paths.SSSD_DB, sssd_timestamps)
