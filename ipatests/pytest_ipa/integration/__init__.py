@@ -386,77 +386,67 @@ def mh(request, class_integration_logs):
     """
     cls = request.cls
 
-    if cls.num_trusted_domains == 1:
-        mh = make_multihost_fixture(request, descriptions=[
-            {
-                'type': 'IPA',
-                'hosts':
-                {
-                    'master': 1,
-                    'replica': cls.num_replicas,
-                    'client': cls.num_clients,
-                }
-            },
-            {
-                'type': 'TRUSTED_IPA',
-                'hosts':
-                {
-                    'master': 1,
-                    'replica': cls.num_trusted_replicas,
-                    'client': cls.num_trusted_clients,
+    domain_description =  {
+        'type': 'IPA',
+        'hosts': {
+            'master': 1,
+            'replica': cls.num_replicas,
+            'client': cls.num_clients,
+        },
+    }
+    domain_description['hosts'].update(
+        {role: 1 for role in cls.required_extra_roles})
 
-                },
-            },
-        ], config_class=Config, _config=get_global_config(),)
-    else:
-        domain_description = {
-            'type': 'IPA',
-            'hosts': {
-                'master': 1,
-                'replica': cls.num_replicas,
-                'client': cls.num_clients,
-            },
+    domain_descriptions = [domain_description]
+    for _i in range(cls.num_trusted_domains):
+        trusted_domain_description = {
+            'type': 'TRUSTED_IPA',
+            'hosts':
+            {
+                'trusted_master': 1,
+                'trusted_replica': cls.num_trusted_replicas,
+                'trusted_client': cls.num_trusted_clients,
+            }
         }
-        domain_description['hosts'].update(
-            {role: 1 for role in cls.required_extra_roles})
+        domain_descriptions.append(trusted_domain_description)
 
-        domain_descriptions = [domain_description]
-        for _i in range(cls.num_ad_domains):
-            domain_descriptions.append({
-                'type': 'AD',
-                'hosts': {'ad': 1}
-            })
-        for _i in range(cls.num_ad_subdomains):
-            domain_descriptions.append({
-                'type': 'AD_SUBDOMAIN',
-                'hosts': {'ad_subdomain': 1}
-            })
-        for _i in range(cls.num_ad_treedomains):
-            domain_descriptions.append({
-                'type': 'AD_TREEDOMAIN',
-                'hosts': {'ad_treedomain': 1}
-            })
-        mh = make_multihost_fixture(
-            request,
-            domain_descriptions,
-            config_class=Config,
-            _config=get_global_config(),
-        )
-    if cls.num_trusted_domains == 1:
-        mh.domain1 = mh.config.domains[0]
-        mh.domain2 = mh.config.domains[1]
+    for _i in range(cls.num_ad_domains):
+        domain_descriptions.append({
+            'type': 'AD',
+            'hosts': {'ad': 1}
+        })
+    for _i in range(cls.num_ad_subdomains):
+        domain_descriptions.append({
+            'type': 'AD_SUBDOMAIN',
+            'hosts': {'ad_subdomain': 1}
+        })
+    for _i in range(cls.num_ad_treedomains):
+        domain_descriptions.append({
+            'type': 'AD_TREEDOMAIN',
+            'hosts': {'ad_treedomain': 1}
+        })
 
-        [mh.master] = mh.domain1.hosts_by_role('master')
-        mh.replicas = mh.domain1.hosts_by_role('replica')
-        mh.clients = mh.domain1.hosts_by_role('client')
-        [mh.trusted_master] = mh.domain2.hosts_by_role('master')
-        mh.trusted_replicas = mh.domain2.hosts_by_role('replica')
-        mh.trusted_clients = mh.domain2.hosts_by_role('client')
-    else:
-        mh.domain = mh.config.domains[0]
-        [mh.master] = mh.domain.hosts_by_role('master')
-        mh.replicas = mh.domain.hosts_by_role('replica')
-        mh.clients = mh.domain.hosts_by_role('client')
+    mh = make_multihost_fixture(
+        request,
+        domain_descriptions,
+        config_class=Config,
+        _config=get_global_config(),
+    )
+        
+    for domain in mh.config.domains:
+        if domain.type == 'IPA':
+            mh.domain = domain
+        elif domain.type == 'TRUSTED_IPA':
+            mh.trusted_domain = domain
+
+    [mh.master] = mh.domain.hosts_by_role('master')
+    mh.replicas = mh.domain.hosts_by_role('replica')
+    mh.clients = mh.domain.hosts_by_role('client')
+
+    if mh.config.trusted_domains:
+        [mh.trusted_master] = mh.trusted_domain.hosts_by_role('master')
+        mh.trusted_replicas = mh.trusted_domain.hosts_by_role('replica')
+        mh.trusted_clients = mh.trusted_domain.hosts_by_role('client')
 
     ad_domains = mh.config.ad_domains
     if ad_domains:
@@ -510,26 +500,20 @@ def add_compat_attrs(cls, mh):
     This is deprecated in favor of the mh fixture.
     To be removed when no more tests using this.
     """
-    if cls.num_trusted_domains == 1:
-        cls.domain1 = mh.domain1
-        cls.domain2 = mh.domain2
-        cls.master = mh.master
-        cls.replicas = mh.replicas
-        cls.clients = mh.clients
+    cls.domain = mh.domain
+    cls.master = mh.master
+    cls.replicas = mh.replicas
+    cls.clients = mh.clients
+    cls.ad_domains = mh.config.ad_domains
+    if cls.ad_domains:
+        cls.ads = mh.ads
+        cls.ad_subdomains = mh.ad_subdomains
+        cls.ad_treedomains = mh.ad_treedomains
+    cls.trusted_domains = mh.config.trusted_domains
+    if cls.trusted_domains:
         cls.trusted_master = mh.trusted_master
         cls.trusted_replicas = mh.trusted_replicas
         cls.trusted_clients = mh.trusted_clients
-        cls.ad_domains = mh.config.ad_domains
-    else:
-        cls.domain = mh.domain
-        cls.master = mh.master
-        cls.replicas = mh.replicas
-        cls.clients = mh.clients
-        cls.ad_domains = mh.config.ad_domains
-        if cls.ad_domains:
-            cls.ads = mh.ads
-            cls.ad_subdomains = mh.ad_subdomains
-            cls.ad_treedomains = mh.ad_treedomains
 
 
 def del_compat_attrs(cls):
@@ -538,25 +522,21 @@ def del_compat_attrs(cls):
     This is deprecated in favor of the mh fixture.
     To be removed when no more tests using this.
     """
-    if cls.num_trusted_domains == 1:
-        del cls.master
-        del cls.replicas
-        del cls.clients
+
+    del cls.master
+    del cls.replicas
+    del cls.clients
+    del cls.domain
+    if cls.ad_domains:
+        del cls.ads
+        del cls.ad_subdomains
+        del cls.ad_treedomains
+    del cls.ad_domains
+    if cls.trusted_domains:
         del cls.trusted_master
         del cls.trusted_replicas
         del cls.trusted_clients
-        del cls.domain1
-        del cls.domain2
-    else:
-        del cls.master
-        del cls.replicas
-        del cls.clients
-        del cls.domain
-        if cls.ad_domains:
-            del cls.ads
-            del cls.ad_subdomains
-            del cls.ad_treedomains
-        del cls.ad_domains
+    del cls.trusted_domains
 
 
 def skip_if_fips(reason='Not supported in FIPS mode', host='master'):

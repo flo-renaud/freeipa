@@ -9,7 +9,6 @@ classes:
   - "RunPytest3"
   - "RunWebuiTests"
   - "RunADTests"
-  - "RunMultiDomainPytest"
 
 # (Optional) Definition files that should contain the same number of jobs
 fixed_n_jobs:

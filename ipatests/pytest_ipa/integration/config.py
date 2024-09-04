@@ -88,6 +88,10 @@ class Config(pytest_multihost.config.Config):
     def ad_domains(self):
         return [d for d in self.domains if d.is_ad_type]
 
+    @property
+    def trusted_domains(self):
+        return [d for d in self.domains if d.is_trusted_ipa_type]
+
     def get_all_hosts(self):
         for domain in self.domains:
             for host in domain.hosts:
@@ -95,10 +99,17 @@ class Config(pytest_multihost.config.Config):
 
     def get_all_ipa_hosts(self):
         for ipa_domain in (d for d in self.domains
-                           if d.is_ipa_type or d.is_trusted_ipa_type
+                           if d.is_ipa_type
                            ):
             for ipa_host in ipa_domain.hosts:
                 yield ipa_host
+
+    def get_all_trusted_hosts(self):
+        for domain in (d for d in self.domains
+                           if d.is_trusted_ipa_type
+                           ):
+            for host in domain.hosts:
+                yield host
 
     def to_dict(self):
         extra_args = self.extra_init_args - {'dirman_dn'}
