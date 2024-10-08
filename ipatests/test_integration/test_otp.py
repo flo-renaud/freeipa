@@ -488,10 +488,10 @@ class TestOTPToken(IntegrationTest):
             otpuid, totp = add_otptoken(master, USER3, otptype='totp')
             master.run_command(['ipa', 'otptoken-show', otpuid])
             totp.generate(int(time.time())).decode('ascii')
-            otpvalue = "\n"
+            otpvalue = ""
             tasks.clear_sssd_cache(self.master)
             sssd_version = tasks.get_sssd_version(master)
-            with xfail_context(sssd_version < tasks.parse_version('2.9.5'),
+            with xfail_context(sssd_version < tasks.parse_version('2.9.6'),
                                'https://github.com/SSSD/sssd/pull/7500'):
                 result = ssh_2fa_with_cmd(master, self.master.external_hostname,
                                         USER3, PASSWORD, otpvalue=otpvalue,
@@ -540,19 +540,17 @@ class TestOTPToken(IntegrationTest):
             otpvalue = totp.generate(int(time.time())).decode('ascii')
             tasks.clear_sssd_cache(self.master)
             sssd_version = tasks.get_sssd_version(master)
-            with xfail_context(sssd_version < tasks.parse_version('2.9.5'),
-                               'https://github.com/SSSD/sssd/pull/7500'):
-                result = ssh_2fa_with_cmd(master, self.master.external_hostname,
-                                        USER4, PASSWORD, otpvalue=otpvalue,
-                                        command="klist")
-                print(result.stdout_text)
-                cmd = self.master.run_command(['semanage', 'login', '-l'])
-                # check the output
-                assert 'Password authentication successful' in result.stdout_text
-                assert USER4 in result.stdout_text
-                assert (f'Default principal: {USER4}@{self.master.domain.realm}' in
-                        result.stdout_text)
-                assert USER4 in cmd.stdout_text
+            result = ssh_2fa_with_cmd(master, self.master.external_hostname,
+                                      USER4, PASSWORD, otpvalue=otpvalue,
+                                      command="klist")
+            print(result.stdout_text)
+            cmd = self.master.run_command(['semanage', 'login', '-l'])
+            # check the output
+            assert 'Password authentication successful' in result.stdout_text
+            assert USER4 in result.stdout_text
+            assert (f'Default principal: {USER4}@{self.master.domain.realm}' in
+                    result.stdout_text)
+            assert USER4 in cmd.stdout_text
         finally:
             master.run_command(['ipa', 'user-del', USER4])
             self.master.run_command(['semanage', 'login', '-D'])
