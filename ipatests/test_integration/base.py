@@ -143,6 +143,27 @@ class MultiDomainIntegrationTest(IntegrationTest):
                                cls.trusted_clients, 1,
                                random_serial=cls.random_serial,
                                extra_args=extra_args,)
+        # Now enable dnssec on the zones
+        cls.master.run_command([
+            "ipa-dns-install",
+            "--dnssec-master",
+            "--forwarder", cls.master.config.dns_forwarder,
+            "-U",
+        ])
+        cls.master.run_command([
+            "ipa", "dnszone-mod", cls.master.domain.name,
+            "--dnssec=True"
+        ])
+        cls.trusted_master.run_command([
+            "ipa-dns-install",
+            "--dnssec-master",
+            "--forwarder", cls.trusted_master.config.dns_forwarder,
+            "-U",
+        ])
+        cls.trusted_master.run_command([
+            "ipa", "dnszone-mod", cls.trusted_master.domain.name,
+            "--dnssec=True"
+        ])
 
     @classmethod
     def uninstall(cls, mh):
