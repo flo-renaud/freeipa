@@ -119,79 +119,39 @@ class IntegrationTest:
 @ordered
 @pytest.mark.usefixtures('mh')
 @pytest.mark.usefixtures('integration_logs')
-class MultiDomainIntegrationTest:
+class MultiDomainIntegrationTest(IntegrationTest):
     num_trusted_domains = 1
-    num_replicas = 0
-    num_clients = 0
     num_trusted_replicas = 0
     num_trusted_clients = 0
-    domain_level = None
-    fips_mode = None
-    random_serial = False
-    token_password = None
-    num_ad_domains = 0
-    num_ad_subdomains = 0
-    num_ad_treedomains = 0
-    required_extra_roles = []
-    topology = None
-
-    @classmethod
-    def host_by_role(cls, role):
-        for domain in cls.get_domains():
-            try:
-                return domain.host_by_role(role)
-            except LookupError:
-                pass
-        raise LookupError(role)
-
-    @classmethod
-    def get_all_hosts(cls):
-        return ([cls.master] + cls.replicas + cls.clients + [
-            cls.host_by_role(r) for r in cls.required_extra_roles
-        ]
-        )
 
     @classmethod
     def get_domains(cls):
-        return [cls.domain] + cls.ad_domains
-
-    @classmethod
-    def enable_fips_mode(cls):
-        for host in cls.get_all_hosts():
-            if not host.is_fips_mode:
-                host.enable_userspace_fips()
-
-    @classmethod
-    def disable_fips_mode(cls):
-        for host in cls.get_all_hosts():
-            if host.is_userspace_fips:
-                host.disable_userspace_fips()
+        return [cls.domain] + cls.ad_domains + cls.trusted_domains
 
     @classmethod
     def install(cls, mh):
-        tasks.install_master(cls.master)
-        tasks.install_master(cls.trusted_master)
+        super(MultiDomainIntegrationTest, cls).install(mh)
 
-        tasks.install_replica(cls.master, cls.replicas[0])
-        tasks.install_replica(cls.trusted_master, cls.trusted_replicas[0])
+        extra_args = []
+        if cls.domain_level is not None:
+            domain_level = cls.domain_level
+        else:
+            domain_level = cls.trusted_master.config.domain_level
 
-        tasks.install_client(cls.master, cls.clients[0])
-        tasks.install_client(cls.trusted_master, cls.trusted_clients[0])
-
+        if cls.topology is None:
+            return
+        else:
+            if cls.token_password:
+                extra_args.extend(('--token-password', cls.token_password,))
+            tasks.install_topo(cls.topology,
+                               cls.trusted_master, cls.trusted_replicas,
+                               cls.trusted_clients, domain_level,
+                               random_serial=cls.random_serial,
+                               extra_args=extra_args,)
+    
     @classmethod
     def uninstall(cls, mh):
-        for replica in cls.replicas:
-            try:
-                tasks.run_server_del(
-                    cls.master, replica.hostname, force=True,
-                    ignore_topology_disconnect=True, ignore_last_of_role=True)
-            except subprocess.CalledProcessError:
-                pass
-            tasks.uninstall_master(replica)
-        tasks.uninstall_master(cls.master)
-        for client in cls.clients:
-            tasks.uninstall_client(client)
-
+        super(MultiDomainIntegrationTest, cls).uninstall(mh)
         for trustedreplica in cls.trusted_replicas:
             try:
                 tasks.run_server_del(

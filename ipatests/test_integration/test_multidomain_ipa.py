@@ -7,6 +7,7 @@ class TestMultidomain(MultiDomainIntegrationTest):
     num_replicas = 1
     num_trusted_clients = 1
     num_trusted_replicas = 1
+    topology = 'line'
 
     def test_multidomain_setup(self):
         """

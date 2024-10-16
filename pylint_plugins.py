@@ -565,7 +565,8 @@ AstroidBuilder(MANAGER).string_build(textwrap.dedent(
 AstroidBuilder(MANAGER).string_build(
     textwrap.dedent(
         """\
-    from ipatests.test_integration.base import IntegrationTest, MultiDomainIntegrationTest # noqa: E501
+    from ipatests.test_integration.base import IntegrationTest
+    from ipatests.test_integration.base import MultiDomainIntegrationTest
     from ipatests.pytest_ipa.integration.host import Host, WinHost
     from ipatests.pytest_ipa.integration.config import Config, Domain
 
@@ -584,6 +585,10 @@ AstroidBuilder(MANAGER).string_build(
         def __getitem__(self, key):
             return Domain()
 
+    class PylintTrustedDomains:
+        def __getitem__(self, key):
+            return Domain()
+
 
     Host.config = Config()
     Host.domain = Domain()
@@ -596,14 +601,11 @@ AstroidBuilder(MANAGER).string_build(
     IntegrationTest.ad_treedomains = PylintWinHosts()
     IntegrationTest.ad_subdomains = PylintWinHosts()
     IntegrationTest.ad_domains = PylintADDomains()
-    MultiDomainIntegrationTest.domain = Domain()
-    MultiDomainIntegrationTest.master = Host()
-    MultiDomainIntegrationTest.replicas = PylintIPAHosts()
-    MultiDomainIntegrationTest.clients = PylintIPAHosts()
-    MultiDomainIntegrationTest.ads = PylintWinHosts()
-    MultiDomainIntegrationTest.ad_treedomains = PylintWinHosts()
-    MultiDomainIntegrationTest.ad_subdomains = PylintWinHosts()
-    MultiDomainIntegrationTest.ad_domains = PylintADDomains()
+    #MultiDomainIntegrationTest.domain = Domain()
+    #MultiDomainIntegrationTest.master = Host()
+    #MultiDomainIntegrationTest.replicas = PylintIPAHosts()
+    #MultiDomainIntegrationTest.clients = PylintIPAHosts()
+    MultiDomainIntegrationTest.trusted_domains = PylintTrustedDomains()
     MultiDomainIntegrationTest.trusted_master = Host()
     MultiDomainIntegrationTest.trusted_replicas = PylintIPAHosts()
     MultiDomainIntegrationTest.trusted_clients = PylintIPAHosts()
