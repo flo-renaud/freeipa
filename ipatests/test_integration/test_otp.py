@@ -489,16 +489,19 @@ class TestOTPToken(IntegrationTest):
         try:
             otpuid, totp = add_otptoken(master, USER3, otptype='totp')
             master.run_command(['ipa', 'otptoken-show', otpuid])
-            totp.generate(int(time.time())).decode('ascii')
             otpvalue = "\n"
             tasks.clear_sssd_cache(self.master)
             github_ticket = "https://github.com/SSSD/sssd/pull/7500"
             sssd_version = tasks.get_sssd_version(master)
-            fail_condition = (
-                osinfo.id in ['rhel', 'fedora']
+            fedora_fail = (
+                osinfo.id == 'fedora'
+                and sssd_version == tasks.parse_version("2.9.5")
+            )
+            rhel_fail = (
+                osinfo.id == 'rhel'
                 and sssd_version < tasks.parse_version("2.9.5")
             )
-            with xfail_context(fail_condition, reason=github_ticket):
+            with xfail_context(rhel_fail or fedora_fail, reason=github_ticket):
                 result = ssh_2fa_with_cmd(master,
                                           self.master.external_hostname,
                                           USER3, PASSWORD, otpvalue=otpvalue,
