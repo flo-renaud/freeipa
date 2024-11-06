@@ -51,28 +51,62 @@ topologies:
     memory: 12096
 
 jobs:
-  fedora-latest/build:
+  testing-fedora/build:
     requires: []
     priority: 100
     job:
       class: Build
       args:
+        enable_testing_repo: True
         git_repo: '{git_repo}'
         git_refspec: '{git_refspec}'
         template: &ci-master-latest
+          name: freeipa/ci-master-f41
+          version: 0.0.1
+        timeout: 1800
+        topology: *build
+
+  testing-fedora/simple_replication:
+    requires: [testing-fedora/build]
+    priority: 50
+    job:
+      class: RunPytest
+      args:
+        build_url: '{testing-fedora/build_url}'
+        update_packages: True
+        enable_testing_repo: True
+        test_suite: test_integration/test_simple_replication.py
+        template: *ci-master-latest
+        timeout: 3600
+        topology: *master_1repl
+
+  fedora-previous/build:
+    requires: []
+    priority: 100
+    job:
+      class: Build
+      args:
+        enable_testing_repo: True
+        git_repo: '{git_repo}'
+        git_refspec: '{git_refspec}'
+        template: &ci-master-previous
           name: freeipa/ci-master-f40
           version: 0.0.1
         timeout: 1800
         topology: *build
 
-  fedora-latest/temp_commit:
-    requires: [fedora-latest/build]
+  fedora-previous/simple_replication:
+    requires: [fedora-previous/build]
     priority: 50
     job:
       class: RunPytest
       args:
-        build_url: '{fedora-latest/build_url}'
-        test_suite: test_integration/test_REPLACEME.py
-        template: *ci-master-latest
+        build_url: '{fedora-previous/build_url}'
+        update_packages: True
+        enable_testing_repo: True
+        update_packages: True
+        enable_testing_repo: True
+        test_suite: test_integration/test_simple_replication.py
+        template: *ci-master-previous
         timeout: 3600
-        topology: *master_1repl_1client
+        topology: *master_1repl
