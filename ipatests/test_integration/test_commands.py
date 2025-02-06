@@ -1584,8 +1584,9 @@ class TestIPACommand(IntegrationTest):
         )
         for cmd in server_cmds:
             result = self.master.run_command(
-                [f'journalctl -t /usr/sbin/{cmd} -n1 -o json-pretty'],
-                raiseonerr=False
+                ['journalctl', '-t', f'/usr/sbin/{cmd}', '-n1',
+                 '-o', 'json-pretty'],
+                raiseonerr=True
             )
             assert self.master.config.admin_password not in result.stdout_text
             assert self.master.config.dirman_password not in result.stdout_text
