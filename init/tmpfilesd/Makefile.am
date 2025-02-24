@@ -1,8 +1,10 @@
 dist_noinst_DATA =     \
-	ipa.conf.in
+	ipa.conf.in \
+	ipaclient.conf.in
 
 systemdtmpfiles_DATA =         \
-	ipa.conf
+	ipa.conf \
+	ipaclient.conf
 
 CLEANFILES = $(systemdtmpfiles_DATA)
 
