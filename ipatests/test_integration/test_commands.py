@@ -1622,20 +1622,6 @@ class TestIPACommand(IntegrationTest):
         )
         self.master.run_command(restore_cmd)
 
-        # re-initializing topology after restore
-        for topo_suffix in 'domain', 'ca':
-            topo_name = find_segment(self.master, self.replicas[0], topo_suffix)
-            arg = ['ipa', 'topologysegment-reinitialize',
-                   topo_suffix, topo_name]
-            if topo_name.split('-to-', maxsplit=1)[0] != self.master.hostname:
-                arg.append('--left')
-            else:
-                arg.append('--right')
-            self.replicas[0].run_command(arg)
-
-        # wait sometime for re-initialization
-        tasks.wait_for_replication(self.replicas[0].ldap_connect())
-
         tasks.check_journal_does_not_contain_secret(
             self.master, restore_cmd[0]
         )
@@ -1647,29 +1633,6 @@ class TestIPACommand(IntegrationTest):
         tasks.check_journal_does_not_contain_secret(
             self.replicas[0], '/usr/sbin/ipa-replica-install'
         )
-
-    def test_ipa_cacert_manage_prune(self):
-        """Test for ipa-cacert-manage prune"""
-
-        certfile = os.path.join(self.master.config.test_dir, 'cert.pem')
-        self.master.put_file_contents(certfile, isrgrootx1)
-        result = self.master.run_command(
-            [paths.IPA_CACERT_MANAGE, 'install', certfile])
-
-        certs_before_prune = self.master.run_command(
-            [paths.IPA_CACERT_MANAGE, 'list'], raiseonerr=False
-        ).stdout_text
-
-        assert isrgrootx1_nick in certs_before_prune
-
-        # Jump in time to make sure the cert is expired
-        self.master.run_command(['date', '-s', '+15Years'])
-        result = self.master.run_command(
-            [paths.IPA_CACERT_MANAGE, 'prune'], raiseonerr=False
-        ).stdout_text
-        self.master.run_command(['date', '-s', '-15Years'])
-
-        assert isrgrootx1_nick in result
 
 
 class TestIPACommandWithoutReplica(IntegrationTest):
@@ -1904,6 +1867,29 @@ class TestIPACommandWithoutReplica(IntegrationTest):
         )
         assert old_err_msg not in dirsrv_error_log
         assert re.search(new_err_msg, dirsrv_error_log)
+
+    def test_ipa_cacert_manage_prune(self):
+        """Test for ipa-cacert-manage prune"""
+
+        certfile = os.path.join(self.master.config.test_dir, 'cert.pem')
+        self.master.put_file_contents(certfile, isrgrootx1)
+        result = self.master.run_command(
+            [paths.IPA_CACERT_MANAGE, 'install', certfile])
+
+        certs_before_prune = self.master.run_command(
+            [paths.IPA_CACERT_MANAGE, 'list'], raiseonerr=False
+        ).stdout_text
+
+        assert isrgrootx1_nick in certs_before_prune
+
+        # Jump in time to make sure the cert is expired
+        self.master.run_command(['date', '-s', '+15Years'])
+        result = self.master.run_command(
+            [paths.IPA_CACERT_MANAGE, 'prune'], raiseonerr=False
+        ).stdout_text
+        self.master.run_command(['date', '-s', '-15Years'])
+
+        assert isrgrootx1_nick in result
 
 
 class TestIPAautomount(IntegrationTest):
