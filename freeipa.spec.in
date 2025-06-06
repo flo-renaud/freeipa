@@ -335,7 +335,6 @@ BuildRequires:  nodejs(abi) < 127
 %else
 BuildRequires:  nodejs(abi) < 111
 %endif
-BuildRequires:  npm
 # use old dependency on RHEL 8 for now
 %if 0%{?fedora} >= 31 || 0%{?rhel} >= 9
 BuildRequires:  python3-rjsmin
