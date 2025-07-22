@@ -1083,9 +1083,11 @@ class IPAMigrate():
         if isinstance(val, bytes) or isinstance(val, DN):
             return val
 
+        # Replace base DN
+        val = self.replace_suffix_value(val)
+
         # For DNS DN we only replace suffix
         if dns:
-            val = self.replace_suffix_value(val)
             return val
 
         # Replace host
@@ -1098,9 +1100,6 @@ class IPAMigrate():
 
         # Replace realm
         val = val.replace(self.remote_realm, self.realm)
-
-        # Lastly, replace base DN
-        val = self.replace_suffix_value(val)
 
         return val
 
