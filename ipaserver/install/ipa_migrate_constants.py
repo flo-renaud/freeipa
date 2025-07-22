@@ -846,7 +846,7 @@ DB_OBJECTS = {
         'oc': ['ipantdomainattrs'],
         'subtree': ',cn=ad,cn=etc,$SUFFIX',
         'label': 'AD',
-        'mode': 'production',
+        'mode': 'all',
         'count': 0,
     },
 
