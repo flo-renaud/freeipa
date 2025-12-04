@@ -1319,3 +1319,32 @@ class TestPosixAutoPrivateGroup(BaseTestTrust):
                  "https://github.com/SSSD/sssd/issues/7169"):
                 assert "10047(testgroup@{0})".format(
                     self.ad_domain) in result.stdout_text
+
+
+class TestTrustUpgrade(BaseTestTrust):
+    def test_upgrade_within_forest(self):
+        """
+        Simulate an upgrade from a trust established with samba pre 4.23
+
+        With older samba version, the trust domain object had
+        ipanttrustattributes: 8
+        corresponding to LSA_TRUST_ATTRIBUTE_WITHIN_FOREST
+        and this breaks ipa-upgrade (winbind fails to restart)
+        """
+
+        tasks.configure_dns_for_trust(self.master, self.ad)
+        tasks.establish_trust_with_ad(
+            self.master, self.ad_domain,
+            extra_args=['--range-type', 'ipa-ad-trust'])
+
+        conn = self.master.ldap_connect()
+        trust_dn = DN("cn={},cn=ad,cn=trusts,{}".format(
+            self.ad.domain.name, self.master.domain.basedn
+        ))
+        entry = conn.get_entry(trust_dn)
+
+        # set the extdom plugin timeout to 1s (1000)
+        entry.single_value['ipanttrustattributes'] = '40'
+        conn.update_entry(entry)
+        self.master.run_command(['ipa-server-upgrade'])
+        self.master.run_command(['ipactl', 'restart'])
