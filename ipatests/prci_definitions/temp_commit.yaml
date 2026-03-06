@@ -76,6 +76,7 @@ jobs:
       class: RunPytest
       args:
         build_url: '{fedora-latest/build_url}'
+        selinux_enforcing: True
         test_suite: test_integration/test_idp.py
         template: *ci-master-latest
         timeout: 5000
