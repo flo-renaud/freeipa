@@ -1253,8 +1253,6 @@ class TestTrustFunctionalUser(BaseTestTrust):
             f"group output: {result.stdout_text}"
         )
 
-    @pytest.mark.skip(reason="SSSD regression, fix pending: "
-                      "https://github.com/SSSD/sssd/pull/8442")
     def test_ad_user_in_posix_group_fully_qualified(self):
         """
         Test that AD users in IPA posix group are shown fully qualified.
