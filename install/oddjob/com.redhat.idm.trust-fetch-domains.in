@@ -212,10 +212,9 @@ with ipautil.private_krb5_config(trusted_domain, options.server) as cfg_file:
             "%s$@%s" % (own_trust_flatname, trusted_domain.upper())
         )
 
-        # If keytab does not exist, retrieve it
-        if not os.path.isfile(oneway_keytab_name):
-            retrieve_keytab(api, ccache_name,
-                            oneway_keytab_name, oneway_principal)
+        # Even if keytab exists, retrieve it
+        retrieve_keytab(api, ccache_name,
+                        oneway_keytab_name, oneway_principal)
 
         try:
             have_ccache = False
