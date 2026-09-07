@@ -417,7 +417,8 @@ ipadb_check_trust_view_override(krb5_context context,
 {
     struct ipadb_context *ipactx = NULL;
     krb5_error_code kerr = EINVAL;
-    char *basedn = NULL, *filter = NULL, *attrs[] = {"uid", NULL};
+    char *basedn = NULL, *filter = NULL;
+    char *attrs[] = {IPA_ORIGINAL_UID_ATTR, NULL};
     LDAPMessage *res = NULL, *entry = NULL;
     struct berval **uid_values = NULL;
     char *ticket_cname = NULL;
@@ -478,7 +479,8 @@ ipadb_check_trust_view_override(krb5_context context,
         goto end;
     }
 
-    uid_values = ldap_get_values_len(ipactx->lcontext, entry, "ipaOriginalUid");
+    uid_values = ldap_get_values_len(ipactx->lcontext, entry,
+                                     IPA_ORIGINAL_UID_ATTR);
     if (!uid_values || !uid_values[0]) {
         *status = "TRUST_OVERRIDE_UID_UNDEFINED";
         kerr = EINVAL;
