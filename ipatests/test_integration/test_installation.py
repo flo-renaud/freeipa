@@ -10,7 +10,9 @@ installed.
 from __future__ import absolute_import
 
 import os
+import random
 import re
+import string
 import textwrap
 import time
 from datetime import datetime, timedelta
@@ -2361,8 +2363,9 @@ class TestInstallPQCBase(IntegrationTest):
         """Test that replica CA can issue certificates with ML-DSA config.
 
         Validates:
-        - Replica CA is functional and can issue certificates
-        - Certificate issued from replica matches configured key type
+        - Replica CA is functional and certificates issue works with replica
+        - Certificate matches configured key type
+        - Signature algorithm matches CA type for ML-DSA scenarios
         - CA replication works correctly for ML-DSA scenarios
         """
         if self.num_replicas == 0:
@@ -2374,16 +2377,22 @@ class TestInstallPQCBase(IntegrationTest):
         replica = self.replicas[0]
         expected_key_type = self._get_key_type(self.ipa_key_type)
 
-        # Create a test user on replica
-        test_user = "pqc_replica_test_user"
+        # Create a test user with random suffix to avoid collisions on reruns
+        suffix = ''.join(
+            random.choices(string.ascii_lowercase + string.digits, k=8))
+        test_user = f"pqctest{suffix}"
+
+        # Define file paths before try block to ensure cleanup scope
+        csr_file = os.path.join(paths.OPENSSL_DIR,
+                                f"replica_test_{suffix}.csr")
+        key_file = os.path.join(paths.OPENSSL_PRIVATE_DIR,
+                                f"replica_test_{suffix}.key")
+        cert_file = os.path.join(paths.OPENSSL_CERTS_DIR,
+                                 f"replica_test_{suffix}.crt")
+
         tasks.kinit_admin(replica)
         try:
             tasks.user_add(replica, test_user)
-
-            # Generate CSR with the same key type as IPA installation
-            csr_file = "/tmp/replica_test.csr"
-            key_file = "/tmp/replica_test.key"
-            cert_file = "/tmp/replica_test.crt"
 
             # Generate key and CSR based on configured IPA key type
             if self.ipa_key_type and self.ipa_key_type.startswith("mldsa"):
@@ -2411,14 +2420,25 @@ class TestInstallPQCBase(IntegrationTest):
                 "--certificate-out", cert_file, csr_file
             ])
 
-            # Validate issued certificate has expected key type
-            result = replica.run_command(
+            # Validate issued certificate has expected public key type
+            pk_result = replica.run_command(
                 f"openssl x509 -in {cert_file} -noout -text | grep Public-Key"
             )
-            assert expected_key_type in result.stdout_text, (
+            assert expected_key_type in pk_result.stdout_text, (
                 f"Expected {expected_key_type} in certificate, "
-                f"got: {result.stdout_text}"
+                f"got: {pk_result.stdout_text}"
             )
+
+            # For ML-DSA CA, also verify Signature Algorithm
+            if self.ca_key_type and self.ca_key_type.startswith("mldsa"):
+                sig_result = replica.run_command(
+                    f"openssl x509 -in {cert_file} -noout -text | "
+                    "grep 'Signature Algorithm'"
+                )
+                assert "mldsa" in sig_result.stdout_text.lower(), (
+                    f"Expected ML-DSA signature algorithm, "
+                    f"got: {sig_result.stdout_text}"
+                )
 
         finally:
             # Cleanup
@@ -2442,9 +2462,11 @@ class TestInstallPQCIPACerts(TestInstallPQCBase):
 
 
 class TestInstallPQCCACerts(TestInstallPQCBase):
-    """ML-DSA-44 server keys with ML-DSA-65 (default) CA.
+    """ML-DSA server keys with ML-DSA-44 CA.
 
-    Legacy name; see also 006a.
+    Configuration:
+        ipa_key_type: 'mldsa' (default ML-DSA-65 for IPA service keys)
+        ca_key_type: 'mldsa:44' (ML-DSA-44 for CA signing keys)
     """
 
     num_replicas = 1

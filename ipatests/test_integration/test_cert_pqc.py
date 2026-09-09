@@ -171,8 +171,8 @@ class PQCCertHelpers:
             host.run_command(['rm', '-f', probe], raiseonerr=False)
 
     def _generate_user_csr(self, user, stem, key_type='rsa'):
-        csr_file = '%s.csr' % stem
-        key_file = '%s.key' % stem
+        csr_file = os.path.join(paths.OPENSSL_DIR, '%s.csr' % stem)
+        key_file = os.path.join(paths.OPENSSL_PRIVATE_DIR, '%s.key' % stem)
         if key_type == 'rsa':
             self.master.run_command([
                 'openssl', 'req', '-newkey', 'rsa:2048', '-keyout', key_file,
@@ -231,6 +231,10 @@ class PQCCertHelpers:
             )
             assert len(entry.get('usercertificate')) == len(key_specs)
         finally:
+            self.master.run_command(
+                ['ipa', 'user-del', user],
+                raiseonerr=False
+            )
             tasks.kdestroy_all(self.master)
 
     def _getcert_request_host_cert(self, host, req_id, keygen=None):
@@ -428,7 +432,8 @@ class TestInstallMasterClientMLDSACA(PQCInstallBase,
                 paths.PKI_TOMCAT_ALIAS_PWDFILE_TXT,
             )
         )
-        assert '5' in result.stdout_text
+        key_count = int(result.stdout_text.strip())
+        assert key_count == 5, f"Expected 5 ML-DSA CA keys, found {key_count}"
 
     def test_user_cert_rsa_csr_signed_by_mldsa_ca(self):
         """RSA user CSRs are signed by an ML-DSA CA."""
