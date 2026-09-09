@@ -344,7 +344,7 @@ ipadb_cross_validate_pac_attributes(krb5_context context,
             name_len = at_sign - info->upn;
 
             /* Compare UPN name part with ticket cname */
-            if (0 != strncmp(info->upn, ticket_cname, name_len) ||
+            if (0 != strncasecmp(info->upn, ticket_cname, name_len) ||
                 ticket_cname[name_len] != '\0') {
                 *status = "TRUST_PAC_UPN_CNAME_MISMATCH";
                 kerr = EINVAL;
@@ -359,7 +359,8 @@ ipadb_cross_validate_pac_attributes(krb5_context context,
     /* Cross-validate account names if extended UPN format is available */
     if (info->upn_has_sam_and_sid) {
         if (!info->account_name || !info->upn_sam_name ||
-            0 != strcmp(info->account_name, info->upn_sam_name)) {
+            0 != strncasecmp(info->account_name, info->upn_sam_name,
+                             MSPAC_ID_NAME_MAX_LENGTH)) {
             *status = "TRUST_PAC_ACCOUNT_NAME_MISMATCH";
             kerr = EINVAL;
             goto end;
@@ -369,7 +370,8 @@ ipadb_cross_validate_pac_attributes(krb5_context context,
     /* Cross-validate client name matches account name */
     if (info->client_info_present) {
         if (!info->client_name || !info->account_name ||
-            0 != strcmp(info->client_name, info->account_name)) {
+            0 != strncasecmp(info->client_name, info->account_name,
+                             MSPAC_ID_NAME_MAX_LENGTH)) {
             *status = "TRUST_PAC_CLIENT_NAME_MISMATCH";
             kerr = EINVAL;
             goto end;
@@ -497,8 +499,8 @@ ipadb_check_trust_view_override(krb5_context context,
     }
 
     /* Compare override username with ticket cname */
-    if (0 != strncmp(uid_values[0]->bv_val, ticket_cname,
-                     uid_values[0]->bv_len) ||
+    if (0 != strncasecmp(uid_values[0]->bv_val, ticket_cname,
+                         uid_values[0]->bv_len) ||
         '\0' != ticket_cname[uid_values[0]->bv_len]) {
         *status = "TRUST_OVERRIDE_UID_CNAME_MISMATCH";
         kerr = KRB5KDC_ERR_POLICY;
