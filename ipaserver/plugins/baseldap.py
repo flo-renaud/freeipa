@@ -1001,6 +1001,7 @@ last, after all sets and adds."""),
     enforce_managed_permission_operations = []
 
     def enforce_managed_permissions(self, *keys, **options):
+        # pylint: disable=cyclic-import  # breaks import cycle
         from ipaserver.plugins.privilege import principal_has_privilege
         mp = getattr(self.obj, 'managed_permissions', None)
         if not mp:
