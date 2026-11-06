@@ -73,14 +73,38 @@ jobs:
         timeout: 1800
         topology: *build
 
-  fedora-latest/temp_commit:
+  fedora-latest/test_external_idp:
     requires: [fedora-latest/build]
     priority: 50
     job:
       class: RunPytest
       args:
         build_url: '{fedora-latest/build_url}'
-        test_suite: test_integration/test_REPLACEME.py
+        test_suite: test_integration/test_idp.py
         template: *ci-master-latest
-        timeout: 3600
+        timeout: 5000
+        topology: *master_2repl_1client
+
+  fedora-latest/krbtpolicy:
+    requires: [fedora-latest/build]
+    priority: 50
+    job:
+      class: RunPytest
+      args:
+        build_url: '{fedora-latest/build_url}'
+        test_suite: test_integration/test_krbtpolicy.py
+        template: *ci-master-latest
+        timeout: 4800
+        topology: *master_1repl
+
+  fedora-latest/test_commands:
+    requires: [fedora-latest/build]
+    priority: 50
+    job:
+      class: RunPytest
+      args:
+        build_url: '{fedora-latest/build_url}'
+        test_suite: test_integration/test_commands.py::TestIPACommand
+        template: *ci-master-latest
+        timeout: 6000
         topology: *master_1repl_1client

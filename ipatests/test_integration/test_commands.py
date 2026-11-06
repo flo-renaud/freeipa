@@ -791,7 +791,11 @@ class TestIPACommand(IntegrationTest):
                         replace: krbPasswordExpiration
                         krbPasswordExpiration: {exp}
                         """).format(dn=user_dn, exp=offset_time)
-                    tasks.ldapmodify_dm(master, ldif)
+                    try:
+                        result = tasks.ldapmodify_dm(master, ldif)
+                    except CalledProcessError:
+                        # The call must return Constraint violation
+                        assert result.returncode == 19
                     cmd = master.run_command(
                         ['ipa', 'user-mod', offset_user,
                          '--password-expiration', offset_time],
@@ -2367,6 +2371,9 @@ class TestIPACommand(IntegrationTest):
         password = 'Secret@123'
 
         tasks.kinit_admin(self.master)
+        # The test must allow unlimited max life, otherwise pwd expiration
+        # is limited by the password policy
+        self.master.run_command(['ipa', 'pwpolicy-mod', '--maxlife=0'])
         tasks.user_add(self.master, testuser, password=password)
         self.master.run_command([
             'ipa', 'user-mod', testuser, '--password-expiration',
