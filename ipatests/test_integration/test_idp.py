@@ -1,5 +1,6 @@
 from __future__ import absolute_import
 
+from datetime import datetime, timedelta
 import time
 import pytest
 import re
@@ -422,9 +423,10 @@ class TestIDPKeycloak(TestIDP):
                 "ipa", "user-mod", self.KEYCLOAK_USER,
                 "--user-auth-type=idp",
             ], raiseonerr=False)
+            newexp = datetime.now() + timedelta(days=1)
             self.master.run_command([
                 "ipa", "user-mod", self.KEYCLOAK_USER,
-                "--password-expiration", "29991231235959Z",
+                "--password-expiration", newexp.strftime("%Y%m%d%H%M%SZ"),
             ], raiseonerr=False)
             tasks.user_del(self.master, pwuser, raiseonerr=False)
             tasks.clear_sssd_cache(self.master)
