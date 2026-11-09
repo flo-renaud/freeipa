@@ -11,7 +11,7 @@ from __future__ import absolute_import
 
 import pytest
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from ipalib.constants import IPAAPI_USER
 from ipaplatform.paths import paths
@@ -28,7 +28,8 @@ MAXLIFE = 86400
 LANG_PKG = ["langpacks-en"]
 PAST_EXPIRATION = "20200101000000Z"
 # Must stay before 2038 until MIT krb5 moves krb5_timestamp to 64-bit.
-FUTURE_EXPIRATION = "20370101000000Z"
+FUTURE_EXPIRATION = (datetime.now()
+                     + timedelta(days=30)).strftime("%Y%m%d%H%M%SZ")
 
 def maxlife_within_policy(input, maxlife, slush=3600):
     """Given klist output of the TGT verify that it is within policy

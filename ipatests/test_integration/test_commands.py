@@ -21,7 +21,7 @@ from subprocess import CalledProcessError
 
 from cryptography.hazmat.backends import default_backend
 from cryptography import x509
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from ipalib.constants import IPAAPI_USER
 from ipalib.errors import DatabaseError
@@ -779,7 +779,7 @@ class TestIPACommand(IntegrationTest):
                     user_dn = ('uid={user},cn=users,cn=accounts,{base_dn}'
                                .format(user=offset_user, base_dn=base_dn))
                     # 3650 days ahead, expressed with a +0100 offset
-                    requested = (datetime.utcnow()
+                    requested = (datetime.now(timezone.utc)
                                  + timedelta(days=3650)).replace(
                                      microsecond=0)
                     offset_time = (requested
@@ -791,7 +791,8 @@ class TestIPACommand(IntegrationTest):
                         replace: krbPasswordExpiration
                         krbPasswordExpiration: {exp}
                         """).format(dn=user_dn, exp=offset_time)
-                    tasks.ldapmodify_dm(master, ldif)
+                    result = tasks.ldapmodify_dm(master, ldif, raiseonerr=False)
+                    assert result.returncode == 19
                     cmd = master.run_command(
                         ['ipa', 'user-mod', offset_user,
                          '--password-expiration', offset_time],
@@ -2367,6 +2368,9 @@ class TestIPACommand(IntegrationTest):
         password = 'Secret@123'
 
         tasks.kinit_admin(self.master)
+        # The test must allow unlimited max life, otherwise pwd expiration
+        # is limited by the password policy
+        self.master.run_command(['ipa', 'pwpolicy-mod', '--maxlife=0'])
         tasks.user_add(self.master, testuser, password=password)
         self.master.run_command([
             'ipa', 'user-mod', testuser, '--password-expiration',
